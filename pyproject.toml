@@ -20,9 +20,10 @@ requires = ["poetry-core"]
 build-backend = "poetry.core.masonry.api"
 
 [tool.poetry.scripts]
-checkdb = "proto:checkdb"
-getkeys = "proto:getkeys"
-getdbcluster = "proto:getdbcluster"
-selectcluster = "proto:selectcluster"
-select_spaces = "proto:select_spaces"
-start = "proto:start"
+protocheckdb = "proto:checkdb"
+protogetkeys = "proto:getkeys"
+protogetdbcluster = "proto:getdbcluster"
+protoselectcluster = "proto:selectcluster"
+protoselect_spaces = "proto:select_spaces"
+protodeploy = "proto:deploy_app"
+start = "dodevops:start"
