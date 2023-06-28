@@ -212,6 +212,35 @@ def build_app_spec_file(env_obj):
     return app_spec
 
 
+def list_apps(client):
+    app_resp = client.apps.list()
+    appcount = len(app_resp["apps"])
+    if appcount > 0:
+        options = []
+        default_app = None
+        for a in app_resp["apps"]:
+            options.append((a["spec"]["name"], a))
+        options.append(("* Cancel *", None))
+        questions = [
+            inquirer.List('app',
+                          message="Here are your apps",
+                          choices=options,
+                          default=default_app,
+                          ),
+        ]
+        answers = inquirer.prompt(questions)
+        pickedoption = answers['app']
+        if pickedoption and pickedoption["spec"] and pickedoption["spec"]["name"]:
+            logger.debug("Using app {}".format(pickedoption["spec"]["name"]))
+            return pickedoption
+        else:
+            print("No valid app chosen")
+            return None
+    else:
+        print("No apps found")
+        return None
+
+
 def get_app(client, app_name="app"):
     app_resp = client.apps.list()
     appcount = len(app_resp["apps"])
@@ -360,21 +389,28 @@ class Helper:
         self.debug = _get_env_var_from_list_or_keep_original(potential_var_names, self.debug, override)
 
     def menu(self):
-        options = [("List Apps", "list"), ("Create App", "create"), ("Update App", "update")]
+        options = [("List Apps", "list"), ("Create App", "create"), ("Update App", "update"), ("Exit", "exit")]
         questions = [
             inquirer.List('whatdo',
                           message="What would you like to do?",
                           choices=options, default="update",
                           ),
         ]
-        answers = inquirer.prompt(questions)
-        pickedoption = answers["whatdo"]
-        if pickedoption == "list":
-            pass
-        elif pickedoption == "create":
-            pass
-        elif pickedoption == "update":
-            update_app_from_app_spec(client=self.do_client, target_app=self.target_app, app_spec=self.app_spec)
+        while True:
+            answers = inquirer.prompt(questions)
+            pickedoption = answers["whatdo"]
+            if pickedoption == "list":
+                if self._target_app and self._target_app["spec"]["name"]:
+                    list_apps(client=self.do_client)
+                else:
+                    list_apps(client=self.do_client)
+            elif pickedoption == "create":
+                pass
+            elif pickedoption == "update":
+                update_app_from_app_spec(client=self.do_client, target_app=self.target_app, app_spec=self.app_spec)
+            elif pickedoption == "exit":
+                break
+
 
 
 def start():
