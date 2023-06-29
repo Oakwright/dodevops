@@ -574,6 +574,18 @@ def get_django_user_module(django_user_module="core"):
     return user_module
 
 
+def extract_project_name(repo):
+    parts = repo.split('/')
+    project_name = parts[-1]
+    return project_name
+
+
+def extract_prefix(component):
+    parts = component.split('-')
+    prefix = parts[0]
+    return prefix
+
+
 def clean_debug_value(debugvalue=None):
     debugmode = False
     binarymode = True
@@ -631,6 +643,27 @@ def get_gh_repo(existing_app=None, app_name=None, repo=None, branch=None):
     return {"repo": repo, "branch": branch}
 
 
+def get_aws_access_key_id():
+    if os.getenv("$AWS_ACCESS_KEY_ID"):
+        return os.getenv("$AWS_ACCESS_KEY_ID")
+    else:
+        print("No AWS_ACCESS_KEY_ID found")
+        print("https://cloud.digitalocean.com/account/api/spaces")
+        promptentry = input(
+            "Please enter your AWS_ACCESS_KEY_ID and press enter to continue: ")
+        return promptentry
+
+
+def get_aws_secret_access_key():
+    if os.getenv("$AWS_SECRET_ACCESS_KEY"):
+        return os.getenv("$AWS_SECRET_ACCESS_KEY")
+    else:
+        print("No AWS_SECRET_ACCESS_KEY found")
+        print("https://cloud.digitalocean.com/account/api/spaces")
+        promptentry = inquirer.password(message="Please enter your AWS_SECRET_ACCESS_KEY and press enter to continue: ")
+        return promptentry
+
+
 class Helper:
     # DigitalOcean's connection info
     _DIGITALOCEAN_TOKEN = None
@@ -669,6 +702,8 @@ class Helper:
     @property
     def _digitalocean_token(self):
         while not self._DIGITALOCEAN_TOKEN:
+            print("No DIGITALOCEAN_TOKEN found")
+            print("https://cloud.digitalocean.com/account/api/tokens")
             self._DIGITALOCEAN_TOKEN = getpass.getpass("Enter your DigitalOcean token: ")
         return self._DIGITALOCEAN_TOKEN
 
@@ -684,6 +719,8 @@ class Helper:
             return self.app_name
         elif self.component_name:
             return self.component_name + "-app"
+        elif self.gh_repo:
+            return extract_project_name(self.gh_repo) + "-app"
         elif self.app_prefix:
             return self.app_prefix + "-app"
         else:
@@ -867,6 +904,12 @@ class Helper:
     def build_app_spec_from_user_input(self):
         allowed_hosts = get_allowed_hosts()
 
+        git_info = get_gh_repo(existing_app=self._target_app,
+                               app_name=self.component_name, repo=self.gh_repo,
+                               branch=self.gh_branch)
+        self.gh_repo = git_info["repo"]
+        self.gh_branch = git_info["branch"]
+
         if self._target_app is not None:
             appname = self._target_app["spec"]["name"]
         else:
@@ -882,10 +925,6 @@ class Helper:
         if not self._secret_key or inquirer.confirm("Do you want to generate a new Django secret key?", default=False):
             self._secret_key = secrets.token_urlsafe()
 
-        git_info = get_gh_repo(existing_app=self._target_app, app_name=self.component_name, repo=self.gh_repo, branch=self.gh_branch)
-        self.gh_repo = git_info["repo"]
-        self.gh_branch = git_info["branch"]
-
         if self._AWS_REGION:
             region_guess = self._AWS_REGION
         elif self._target_app and self._target_app["region"]["data_centers"][0]:
@@ -894,6 +933,11 @@ class Helper:
             region_guess = None
         logger.debug("Get regions with default of {}".format(region_guess))
         aws_region = get_aws_region(client=self.do_client, region_slug=region_guess)
+
+        if not self._AWS_ACCESS_KEY_ID:
+            self._AWS_ACCESS_KEY_ID = get_aws_access_key_id()
+        if not self._AWS_SECRET_ACCESS_KEY:
+            self._AWS_SECRET_ACCESS_KEY = get_aws_secret_access_key()
 
         logger.debug("Connecting to S3")
         session = boto3.session.Session()
@@ -915,8 +959,13 @@ class Helper:
                     print("Aborting")
                     return None
 
+        if not self.component_name:
+            self.component_name = extract_project_name(repo=self.gh_repo)
+        if not self.app_prefix:
+            self.app_prefix = extract_prefix(appname)
+
         rootfolder = get_root_folder(s3client=s3client, space=spacename,
-                                     component_name=self.component_name)
+                                     component_name=appname)
         if not rootfolder:
             return None
 
@@ -951,7 +1000,7 @@ class Helper:
         database_name = pool["db"]
         database_user = pool["user"]
 
-        rootmoduleguess = self.django_root_module or self.app_prefix
+        rootmoduleguess = self.django_root_module or extract_prefix(self.component_name) or self.app_prefix
         django_root_module = get_django_root_module(module_guess=rootmoduleguess)
         self.django_user_module = get_django_user_module(
             django_user_module=self.django_user_module)
