@@ -64,18 +64,24 @@ But if you feel storing values in the .env file isn't secure enough for your per
 The format of the env file is:
 
 ```
-$DIGITALOCEAN_TOKEN=dop_v1_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
-$AWS_ACCESS_KEY_ID=DOxxxxxxxxxxxxxxxxxx
-$AWS_SECRET_ACCESS_KEY=xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
-$AWS_REGION=ams3
-component_name=example_app
-app_prefix=example
-gh_repo=someuser/example-app
-gh_branch=somebranch
-django_user_module=core
-secret_key_env_key=SECRET_KEY
-allowed_hosts_env_key=ALLOWED_HOSTS
-DEBUG=1
+DIGITALOCEAN_TOKEN=dop_v1_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+AWS_ACCESS_KEY_ID=DOxxxxxxxxxxxxxxxxxxx
+AWS_SECRET_ACCESS_KEY=xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+# AWS_REGION=ams3
+# APP_NAME=example-rest-app
+# COMPONENT_NAME=example-rest
+# APP_PREFIX=example
+GH_REPO=xusernamex/xrepox
+# GH_BRANCH=main
+# DJANGO_ROOT_MODULE=example
+# DJANGO_USER_MODULE=core
+# SECRET_KEY_ENV_KEY=SECRET_KEY
+# SECRET_KEY=change_me
+# ALLOWED_HOSTS_ENV_KEY=ALLOWED_HOSTS
+# DEBUG=1
+# DOMAIN=rest.example.com
+# PARENT_DOMAIN=example.com
+# OIDC="\"-----BEGIN RSA PRIVATE KEY-----\\n_xxx_\\n-----END RSA PRIVATE KEY-----\\n\""
 ```
 
 ```shell
