@@ -1,20 +1,46 @@
+# TLDR
+
+This is a tool to take github repos for Django projects and put them on DigitalOcean App Spaces with managed database and DO Spaces S3 storage.
+
+You will need:
+
+1) Poetry installed locally to run this tool
+2) DigitalOcean account https://www.digitalocean.com/?refcode=9ef6f738fd8a
+3) DigitalOcean API token: https://cloud.digitalocean.com/account/api/tokens
+4) DigitalOcean S3 keys: https://cloud.digitalocean.com/account/api/spaces
+5) Authorize DigitalOcean to pull your github repos: https://cloud.digitalocean.com/apps/github/install
+6) A DigitalOcean S3 bucket: https://cloud.digitalocean.com/spaces/new
+7) A DigitalOcean PostgreSQL database cluster: https://cloud.digitalocean.com/databases
+8) A database and user and connection pool configured on the database cluster
+9) Manually add the app as a trusted source on the database
+
+There are plans to integrate items 6-9 into this tool, we just haven't gotten that far yet.
+
+To run the tool:
+
+```shell
+poetry run start
+```
+
+# What is this
+
 This is essentially an experiment/prototype that got a little too big and had some potential. So it's being turned into a project.
 
 proto.py is the original prototype.
-
-protodeploy is the original exerimental deploy script that worked for at least two of the django apps I work on.
 
 This project uses inquirer to get user input. As far as I know it only works on linux and mac. 
 When debugging in pycharm, you may need to set the run/debug settings to use the terminal emulation.
 You can find a link with more info here: https://intellij-support.jetbrains.com/hc/en-us/community/posts/360003383619-Pycharm-2019-termios-error-25-Inappropriate-ioctl-for-device-?page=1#community_comment_6589796593042 and here https://github.com/magmax/python-readchar/issues/11
 
-## Generate DO API token
+# Details
+
+## Generating DO API token
 
 In order for this app to work it needs a valid DigitalOcean Personal Access Token. 
 The token is not required after this is run, so it is okay to recyle the token when finished. 
 The token can either be stored in a .env file, or it can be pasted into the app at run time. 
 
-### To generate a new token
+### To generating a new token
 
 Go here: https://cloud.digitalocean.com/account/api/tokens
 
@@ -32,11 +58,11 @@ Storing the token in the .env file is convenient but it is not the most secure, 
 
 If you want more info about DO tokens, see here: https://docs.digitalocean.com/reference/api/create-personal-access-token/
 
-## Generate DO Spaces Key
+## Generating DO Spaces Key
 
 A DO Spaces key is required for storing a media upload folder, as app platform doesn't have storage. 
 
-### To generate an app spaces key 
+### To generating an app spaces key 
 
 Go here: https://cloud.digitalocean.com/account/api/spaces 
 
@@ -83,34 +109,3 @@ GH_REPO=xusernamex/xrepox
 # PARENT_DOMAIN=example.com
 # OIDC="\"-----BEGIN RSA PRIVATE KEY-----\\n_xxx_\\n-----END RSA PRIVATE KEY-----\\n\""
 ```
-
-```shell
-poetry run protodeploy
-```
-
-```shell
-poetry run start
-```
-
-```shell
-poetry run protocheckdb
-```
-
-```shell
-poetry run protogetkeys
-```
-
-```shell
-poetry run protogetdbcluster
-```
-
-```shell
-poetry run protoselectcluster
-```
-
-```shell
-poetry run protoselect_spaces
-```
-
-
-https://cloud.digitalocean.com/apps/github/install
