@@ -1,10 +1,15 @@
+import json
 import logging
+
+import boto3
 from dotenv import load_dotenv
 import os
 import inquirer
 from pydo import Client
 import getpass
-
+from cryptography.hazmat.primitives.asymmetric import rsa
+from cryptography.hazmat.backends import default_backend as crypto_default_backend
+from cryptography.hazmat.primitives import serialization as crypto_serialization
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.DEBUG)
@@ -17,7 +22,8 @@ logger.addHandler(ch)
 load_dotenv()
 
 
-def _get_env_var_from_list_or_keep_original(env_var_list, original_value=None, override=True):
+def _get_env_var_from_list_or_keep_original(env_var_list, original_value=None,
+                                            override=True):
     if original_value and not override:
         return original_value
 
@@ -58,31 +64,51 @@ def update_app_from_app_spec(client, target_app, app_spec):
     return response
 
 
-def build_env_list(env_obj, secret_key_env_key="SECRET_KEY", allowed_hosts_env_key="ALLOWED_HOSTS"):
-    runtime_vars = [secret_key_env_key, allowed_hosts_env_key, "OIDC_RSA_PRIVATE_KEY", "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_STORAGE_BUCKET_NAME", "AWS_S3_ENDPOINT_URL", "AWS_LOCATION", "DATABASE_URL"]
+def create_app_from_app_spec(client, potential_spec):
+    print(potential_spec)
+    validate_body = {
+        "spec": potential_spec
+    }
+    validate_response = client.apps.validate_app_spec(validate_body)
+    print(validate_response)
+    answer = inquirer.prompt([inquirer.Confirm('continue',
+                                               message="Do you want to continue?")])
+    if not answer["continue"]:
+        print("Aborting")
+        return None
+    response = client.apps.create(body=validate_body)
+    return response
+
+
+def build_env_list(env_obj, secret_key_env_key="SECRET_KEY",
+                   allowed_hosts_env_key="ALLOWED_HOSTS"):
+    runtime_vars = [secret_key_env_key, allowed_hosts_env_key, "OIDC_RSA_PRIVATE_KEY",
+                    "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY",
+                    "AWS_STORAGE_BUCKET_NAME", "AWS_S3_ENDPOINT_URL", "AWS_LOCATION",
+                    "DATABASE_URL"]
     run_and_build_vars = ["DEBUG"]
     build_vars = ["DISABLE_COLLECTSTATIC"]
 
     env_list = []
     for var in runtime_vars:
         temp_obj = {
-          "key": var,
-          "value": env_obj[var],
-          "scope": "RUN_TIME"
+            "key": var,
+            "value": env_obj[var],
+            "scope": "RUN_TIME"
         }
         env_list.append(temp_obj)
     for var in run_and_build_vars:
         temp_obj = {
-          "key": var,
-          "value": env_obj[var],
-          "scope": "RUN_AND_BUILD_TIME"
+            "key": var,
+            "value": env_obj[var],
+            "scope": "RUN_AND_BUILD_TIME"
         }
         env_list.append(temp_obj)
     for var in build_vars:
         temp_obj = {
-          "key": var,
-          "value": env_obj[var],
-          "scope": "BUILD_TIME"
+            "key": var,
+            "value": env_obj[var],
+            "scope": "BUILD_TIME"
         }
         env_list.append(temp_obj)
 
@@ -123,7 +149,7 @@ def populate_app_spec_ingress(app_spec, component_name):
 def populate_app_spec_alerts(app_spec):
     alerts = [{
         "rule": "DEPLOYMENT_FAILED"
-        },
+    },
         {
             "rule": "DOMAIN_FAILED"
         }]
@@ -156,7 +182,8 @@ def populate_app_spec_databases(app_spec, database_cluster_name, database_name,
     return app_spec
 
 
-def populate_app_spec_services(app_spec, component_name, gh_repo, gh_branch, env_list, django_user_module,
+def populate_app_spec_services(app_spec, component_name, gh_repo, gh_branch, env_list,
+                               django_user_module,
                                django_root_module, deploy_on_push=True, port=8000,
                                size_slug="basic-xxs"):
     services_json = {
@@ -182,7 +209,9 @@ def populate_app_spec_services(app_spec, component_name, gh_repo, gh_branch, env
 
 
 def build_app_spec_file(env_obj):
-    env_list = build_env_list(env_obj["envvars"], secret_key_env_key=env_obj["secret_key_env_key"], allowed_hosts_env_key=env_obj["allowed_hosts_env_key"])
+    env_list = build_env_list(env_obj["envvars"],
+                              secret_key_env_key=env_obj["secret_key_env_key"],
+                              allowed_hosts_env_key=env_obj["allowed_hosts_env_key"])
     region = env_obj["region"]
     appname = env_obj["appname"]
     component_name = env_obj["component_name"]
@@ -208,37 +237,10 @@ def build_app_spec_file(env_obj):
     app_spec = populate_app_spec_services(app_spec, component_name=component_name,
                                           gh_repo=gh_repo,
                                           gh_branch=gh_branch,
-                                          django_user_module=django_user_module, env_list=env_list, django_root_module=django_root_module)
+                                          django_user_module=django_user_module,
+                                          env_list=env_list,
+                                          django_root_module=django_root_module)
     return app_spec
-
-
-def list_apps(client):
-    app_resp = client.apps.list()
-    appcount = len(app_resp["apps"])
-    if appcount > 0:
-        options = []
-        default_app = None
-        for a in app_resp["apps"]:
-            options.append((a["spec"]["name"], a))
-        options.append(("* Cancel *", None))
-        questions = [
-            inquirer.List('app',
-                          message="Here are your apps",
-                          choices=options,
-                          default=default_app,
-                          ),
-        ]
-        answers = inquirer.prompt(questions)
-        pickedoption = answers['app']
-        if pickedoption and pickedoption["spec"] and pickedoption["spec"]["name"]:
-            logger.debug("Using app {}".format(pickedoption["spec"]["name"]))
-            return pickedoption
-        else:
-            print("No valid app chosen")
-            return None
-    else:
-        print("No apps found")
-        return None
 
 
 def get_app(client, app_name="app"):
@@ -258,7 +260,7 @@ def get_app(client, app_name="app"):
         options.append(("* Cancel *", None))
         questions = [
             inquirer.List('app',
-                          message="Are you rebuilding one of these apps?",
+                          message="App List",
                           choices=options,
                           default=default_app,
                           ),
@@ -276,6 +278,249 @@ def get_app(client, app_name="app"):
         return None
 
 
+def get_allowed_hosts():
+    logger.debug("domain name is accessible from a DO variable in app platform")
+    return "${APP_DOMAIN}"
+
+
+def generate_rsa_key():
+    key = rsa.generate_private_key(
+        backend=crypto_default_backend(), public_exponent=65537, key_size=4096
+    )
+    private_key = key.private_bytes(
+        crypto_serialization.Encoding.PEM,
+        crypto_serialization.PrivateFormat.TraditionalOpenSSL,
+        crypto_serialization.NoEncryption(),
+    ).decode("utf-8")
+    return private_key
+
+
+def get_oidc_rsa_key():
+    logger.debug("Generating RSA key")
+    rsa_key_line = "\"{}\"".format(repr(generate_rsa_key())[1:-1])
+    return rsa_key_line
+
+
+def get_app_name(appname):
+    if appname is None:
+        appname = inquirer.text("What is the name of your app?")
+    else:
+        appname = inquirer.text("What is the name of your app?", default=appname)
+    return appname
+
+
+def get_aws_region(client, region_slug=None):
+    print("Getting regions")
+    reg_resp = client.regions.list()
+    regioncount = len(reg_resp["regions"])
+    if regioncount > 0:
+        options = []
+        for r in reg_resp["regions"]:
+            if r["available"] and "storage" in r["features"]:
+                options.append((r["name"] + " - " + r["slug"], r["slug"]))
+                if r["slug"] == region_slug:
+                    logger.debug("Found default region")
+                    # return r["slug"]
+        questions = [
+            inquirer.List('region',
+                          message="Which region?",
+                          choices=options, default=region_slug,
+                          ),
+        ]
+        answers = inquirer.prompt(questions)
+        pickedoption = answers['region']
+        logger.debug("Using region {}".format(pickedoption))
+        return pickedoption
+    else:
+        print("No regions found, defaulting to ams3")
+        return "ams3"
+
+
+def get_spaces(s3client):
+    space_resp = s3client.list_buckets()
+    spacecount = len(space_resp['Buckets'])
+    if spacecount > 0:
+        options = []
+        for s in space_resp['Buckets']:
+            options.append(s['Name'])
+        options.append(None)
+        questions = [
+            inquirer.List('space',
+                          message="Which space?",
+                          choices=options,
+                          default=0,
+                          ),
+        ]
+        answers = inquirer.prompt(questions)
+        pickedoption = answers['space']
+        logger.debug("Using space {}".format(pickedoption))
+        return pickedoption
+    else:
+        print("No spaces found")
+        return None
+
+
+def get_root_folder(s3client, space, component_name="app"):
+    space_resp = s3client.list_objects(Bucket=space, Delimiter='/')
+
+    spacecount = len(space_resp['CommonPrefixes'])
+    if spacecount > 0:
+        options = []
+        for s in space_resp['CommonPrefixes']:
+            options.append(s['Prefix'][0:-1])
+        options.append(None)
+        questions = [
+            inquirer.List('folder',
+                          message="Which folder?",
+                          choices=options,
+                          default=component_name,
+                          ),
+        ]
+        answers = inquirer.prompt(questions)
+        pickedoption = answers['folder']
+        print("Using folder {}".format(pickedoption))
+        return pickedoption
+    else:
+        print("No folders found")
+        return None
+
+
+def get_media_folder(s3client, space, media_folder="media",
+                     root_folder=None):
+    space_resp = s3client.list_objects(Bucket=space, Prefix=root_folder + '/',
+                                       Delimiter='{}/'.format(media_folder))
+
+    default_choice = media_folder
+    spacecount = len(space_resp['CommonPrefixes'])
+    if spacecount > 0:
+        options = []
+        for s in space_resp['CommonPrefixes']:
+            options.append(s['Prefix'][0:-1])
+            if s['Prefix'][0:-1] == root_folder + '/' + media_folder:
+                logger.debug("Found default folder {}".format(s['Prefix'][0:-1]))
+                return s['Prefix'][0:-1]
+            elif media_folder in s['Prefix'][0:-1]:
+                logger.debug(
+                    "Folder {} contains {}".format(s['Prefix'][0:-1], media_folder))
+                default_choice = s['Prefix'][0:-1]
+        options.append(None)
+        questions = [
+            inquirer.List('folder',
+                          message="Which folder?",
+                          choices=options,
+                          default=default_choice,
+                          ),
+        ]
+        answers = inquirer.prompt(questions)
+        pickedoption = answers['folder']
+        logger.debug("Using folder {}".format(pickedoption))
+        return pickedoption
+    else:
+        print("No folders found")
+        return None
+
+
+def get_cluster(client, cluster_name="db-postgresql"):
+    db_cluster_resp = client.databases.list_clusters()
+    clustercount = len(db_cluster_resp)
+    if clustercount > 0:
+        default_db_cluster = None
+        options = []
+        for c in db_cluster_resp["databases"]:
+            options.append((c['name'], c))
+            if c['name'] == cluster_name:
+                default_db_cluster = c
+                logger.debug(
+                    "Found default cluster {}".format(default_db_cluster['name']))
+            elif default_db_cluster is None and cluster_name in c['name']:
+                default_db_cluster = c
+                logger.debug("Cluster {} contains {}".format(default_db_cluster['name'],
+                                                             cluster_name))
+
+        options.append(None)
+        questions = [
+            inquirer.List('cluster',
+                          message="Which cluster?",
+                          choices=options, default=default_db_cluster,
+                          ),
+        ]
+        answers = inquirer.prompt(questions)
+        pickedoption = answers['cluster']
+        logger.debug("Using cluster {}".format(pickedoption['name']))
+        return pickedoption
+    else:
+        print("No clusters found")
+        return None
+
+
+def get_pool(client, cluster, pool_name="pool"):
+    if cluster:
+        pool_default = None
+        pool_resp = client.databases.list_connection_pools(cluster["id"])
+        poolcount = len(pool_resp["pools"])
+        if poolcount > 0:
+            pooloptions = []
+            for p in pool_resp["pools"]:
+                pooloptions.append((p["name"], p))
+                if p["name"] == pool_name:
+                    pool_default = p
+                    logger.debug("Found default pool {}".format(pool_default["name"]))
+                elif pool_default is None and pool_name in p["name"]:
+                    pool_default = p
+                    logger.debug(
+                        "Pool {} contains {}".format(pool_default["name"], pool_name))
+            pooloptions.append(None)
+            questions = [
+                inquirer.List('pool',
+                              message="Which pool?",
+                              choices=pooloptions,
+                              default=pool_default,
+                              ),
+            ]
+            answers = inquirer.prompt(questions)
+            pickedoption = answers['pool']
+            logger.debug("Using pool {}".format(pickedoption["name"]))
+            return pickedoption
+        else:
+            print("No connection pools found")
+            return None
+
+
+def get_domain_info(existing_app=None, domain=None, zone=None):
+    logger.debug("Getting domain info")
+    if existing_app is not None and existing_app["spec"]["domains"]:
+        domain = existing_app["spec"]["domains"][0]["domain"]
+        zone = existing_app["spec"]["domains"][0]["zone"]
+        domain = inquirer.text("What domain do you want (such as test.example.com",
+                               default=domain)
+        zone = inquirer.text("What zone is that domain in (such as example.com)",
+                             default=zone)
+        returnobj = {"domain": domain, "zone": zone}
+    else:
+        domain = inquirer.text("What domain do you want (such as test.example.com",
+                               default=domain)
+        zone = inquirer.text("What zone is that domain in (such as example.com)",
+                             default=zone)
+        returnobj = {"domain": domain, "zone": zone}
+    return returnobj
+
+
+def get_django_root_module(module_guess=None):
+    if module_guess is not None:
+        root_module = inquirer.text("What is the name of your Django root module?",
+                                    default=module_guess)
+    else:
+        root_module = inquirer.text("What is the name of your Django root module?")
+    return root_module
+
+
+def get_django_user_module(django_user_module="core"):
+    user_module = inquirer.text("What is the name of your Django user module?",
+                                default=django_user_module)
+
+    return user_module
+
+
 class Helper:
     # DigitalOcean's connection info
     _DIGITALOCEAN_TOKEN = None
@@ -285,16 +530,20 @@ class Helper:
     _do_client = None
 
     # App info
+    app_name = None
     component_name = None
     app_prefix = None
     gh_repo = None
     gh_branch = None
     _target_app = None
     _app_spec = None
+    domain = None
+    zone = None
 
     # Django info
     django_user_module = None
     secret_key_env_key = None
+    _secret_key = None
     allowed_hosts_env_key = None
     debug = False
 
@@ -319,7 +568,14 @@ class Helper:
 
     @property
     def appname_guess(self):
-        return "app"
+        if self.app_name:
+            return self.app_name
+        elif self.component_name:
+            return self.component_name + "-app"
+        elif self.app_prefix:
+            return self.app_prefix + "-app"
+        else:
+            return "app"
 
     @property
     def target_app(self):
@@ -332,6 +588,12 @@ class Helper:
     def app_spec(self):
         if self._app_spec:
             return self._app_spec
+
+    def set_app_spec_from_app(self, app):
+        if app and app["spec"]:
+            self._app_spec = app["spec"]
+        else:
+            self._app_spec = None
 
     def _dump_vars(self):
         print(self._DIGITALOCEAN_TOKEN)
@@ -350,72 +612,239 @@ class Helper:
     def load_env(self, override=False):
 
         # DigitalOcean's connection info
-        potential_var_names = ["$DIGITALOCEAN_TOKEN", "DIGITALOCEAN_TOKEN", "digitalocean_token"]
-        self._DIGITALOCEAN_TOKEN = _get_env_var_from_list_or_keep_original(potential_var_names, self._DIGITALOCEAN_TOKEN, override)
+        potential_var_names = ["$DIGITALOCEAN_TOKEN", "DIGITALOCEAN_TOKEN",
+                               "digitalocean_token"]
+        self._DIGITALOCEAN_TOKEN = _get_env_var_from_list_or_keep_original(
+            potential_var_names, self._DIGITALOCEAN_TOKEN, override)
 
-        potential_var_names = ["$AWS_ACCESS_KEY_ID", "AWS_ACCESS_KEY_ID", "aws_access_key_id"]
-        self._AWS_ACCESS_KEY_ID = _get_env_var_from_list_or_keep_original(potential_var_names, self._AWS_ACCESS_KEY_ID, override)
+        potential_var_names = ["$AWS_ACCESS_KEY_ID", "AWS_ACCESS_KEY_ID",
+                               "aws_access_key_id"]
+        self._AWS_ACCESS_KEY_ID = _get_env_var_from_list_or_keep_original(
+            potential_var_names, self._AWS_ACCESS_KEY_ID, override)
 
-        potential_var_names = ["$AWS_SECRET_ACCESS_KEY", "AWS_SECRET_ACCESS_KEY", "aws_secret_access_key"]
-        self._AWS_SECRET_ACCESS_KEY = _get_env_var_from_list_or_keep_original(potential_var_names, self._AWS_SECRET_ACCESS_KEY, override)
+        potential_var_names = ["$AWS_SECRET_ACCESS_KEY", "AWS_SECRET_ACCESS_KEY",
+                               "aws_secret_access_key"]
+        self._AWS_SECRET_ACCESS_KEY = _get_env_var_from_list_or_keep_original(
+            potential_var_names, self._AWS_SECRET_ACCESS_KEY, override)
 
         potential_var_names = ["$AWS_REGION", "AWS_REGION", "aws_region"]
-        self._AWS_REGION = _get_env_var_from_list_or_keep_original(potential_var_names, self._AWS_REGION, override)
+        self._AWS_REGION = _get_env_var_from_list_or_keep_original(potential_var_names,
+                                                                   self._AWS_REGION,
+                                                                   override)
 
         # App info
+        potential_var_names = ["app_name"]
+        self.app_name = _get_env_var_from_list_or_keep_original(potential_var_names,
+                                                                self.app_name,
+                                                                override)
+
         potential_var_names = ["component_name"]
-        self.component_name = _get_env_var_from_list_or_keep_original(potential_var_names, self.component_name, override)
+        self.component_name = _get_env_var_from_list_or_keep_original(potential_var_names,
+                                                                      self.component_name,
+                                                                      override)
 
         potential_var_names = ["app_prefix", "prefix", "app_name"]
-        self.app_prefix = _get_env_var_from_list_or_keep_original(potential_var_names, self.app_prefix, override)
+        self.app_prefix = _get_env_var_from_list_or_keep_original(potential_var_names,
+                                                                  self.app_prefix,
+                                                                  override)
 
         potential_var_names = ["gh_repo"]
-        self.gh_repo = _get_env_var_from_list_or_keep_original(potential_var_names, self.gh_repo, override)
+        self.gh_repo = _get_env_var_from_list_or_keep_original(potential_var_names,
+                                                               self.gh_repo, override)
 
         potential_var_names = ["gh_branch"]
-        self.gh_branch = _get_env_var_from_list_or_keep_original(potential_var_names, self.gh_branch, override)
+        self.gh_branch = _get_env_var_from_list_or_keep_original(potential_var_names,
+                                                                 self.gh_branch, override)
 
         # Django info
         potential_var_names = ["django_user_module"]
-        self.django_user_module = _get_env_var_from_list_or_keep_original(potential_var_names, self.django_user_module, override)
+        self.django_user_module = _get_env_var_from_list_or_keep_original(
+            potential_var_names, self.django_user_module, override)
 
         potential_var_names = ["secret_key_env_key"]
-        self.secret_key_env_key = _get_env_var_from_list_or_keep_original(potential_var_names, self.secret_key_env_key, override)
+        self.secret_key_env_key = _get_env_var_from_list_or_keep_original(
+            potential_var_names, self.secret_key_env_key, override)
+
+        potential_var_names = ["secret_key", "SECRET_KEY", "DJANGO_SECRET_KEY", "django_secret_key"]
+        self._secret_key = _get_env_var_from_list_or_keep_original(
+            potential_var_names, self._secret_key, override)
 
         potential_var_names = ["allowed_hosts_env_key", "allowed_hosts", "ALLOWED_HOSTS"]
-        self.allowed_hosts_env_key = _get_env_var_from_list_or_keep_original(potential_var_names, self.allowed_hosts_env_key, override)
+        self.allowed_hosts_env_key = _get_env_var_from_list_or_keep_original(
+            potential_var_names, self.allowed_hosts_env_key, override)
 
         potential_var_names = ["debug", "DEBUG"]
-        self.debug = _get_env_var_from_list_or_keep_original(potential_var_names, self.debug, override)
+        self.debug = _get_env_var_from_list_or_keep_original(potential_var_names,
+                                                             self.debug, override)
 
-    def menu(self):
-        options = [("List Apps", "list"), ("Create App", "create"), ("Update App", "update"), ("Exit", "exit")]
-        questions = [
-            inquirer.List('whatdo',
-                          message="What would you like to do?",
-                          choices=options, default="update",
-                          ),
-        ]
+        potential_var_names = ["domain", "DOMAIN", "subdomain", "SUBDOMAIN"]
+        self.domain = _get_env_var_from_list_or_keep_original(potential_var_names,
+                                                              self.domain, override)
+
+        potential_var_names = ["parent_domain", "PARENT_DOMAIN", "zone", "ZONE"]
+        self.zone = _get_env_var_from_list_or_keep_original(potential_var_names,
+                                                            self.zone, override)
+
+    def save_app_spec_to_json_file(self, filename=None):
+        if not filename:
+            filename = self._app_spec["name"] + ".json"
+        with open("appspecs/" + filename, "w") as f:
+            json.dump(self._app_spec, f, indent=4)
+
+    def load_app_spec_from_json_file(self, filename=None):
+        with open("appspecs/" + filename, "r") as f:
+            self._app_spec = json.load(f)
+
+    def submenu_manage_apps(self):
         while True:
+            options = []
+            if self._app_spec:
+                options.append(("Save App Spec to file from memory", "save_to_file"))
+                # options.append(("Edit App Spec in memory", "edit"))
+                # options.append(("Create App from App Spec in memory", "create_do_from_memory"))
+                options.append(
+                    ("Update App from App Spec in memory", "update_do_from_memory"))
+                options.append(("Dump App Spec from memory", "dump_from_memory"))
+            options.append(
+                ("Load App Spec from existing app into memory", "load_from_existing_app"))
+            options.append(("Load App Spec from file into memory", "load_from_file"))
+            options.append(
+                ("Create App Spec from scratch into memory", "load_from_user_input"))
+
+            options.append(("Exit", "exit"))
+            questions = [
+                inquirer.List('whatdo',
+                              message="What would you like to do?",
+                              choices=options, default="update",
+                              ),
+            ]
             answers = inquirer.prompt(questions)
             pickedoption = answers["whatdo"]
-            if pickedoption == "list":
-                if self._target_app and self._target_app["spec"]["name"]:
-                    list_apps(client=self.do_client)
-                else:
-                    list_apps(client=self.do_client)
-            elif pickedoption == "create":
-                pass
-            elif pickedoption == "update":
-                update_app_from_app_spec(client=self.do_client, target_app=self.target_app, app_spec=self.app_spec)
-            elif pickedoption == "exit":
+            if pickedoption == "exit":
                 break
+            elif pickedoption == "load_from_existing_app":
+                self.set_app_spec_from_app(get_app(client=self.do_client))
+            elif pickedoption == "dump_from_memory":
+                print(json.dumps(self._app_spec, indent=4))
+            elif pickedoption == "save_to_file":
+                filename = input("Filename to save to: ")
+                self.save_app_spec_to_json_file(filename=filename)
+            elif pickedoption == "load_from_file":
+                filename = input("Filename to load from: ") or "app-spec.json"
+                self.load_app_spec_from_json_file(filename=filename)
+            elif pickedoption == "update_do_from_memory":
+                print("Which app would you like to update?")
+                self._target_app = get_app(client=self.do_client)
+                update_app_from_app_spec(client=self.do_client,
+                                         target_app=self._target_app,
+                                         app_spec=self._app_spec)
+            elif pickedoption == "create_do_from_memory":
+                create_app_from_app_spec(client=self.do_client,
+                                         potential_spec=self._app_spec)
+            elif pickedoption == "load_from_user_input":
+                self.build_app_spec_from_user_input()
 
+    def build_app_spec_from_user_input(self):
+        allowed_hosts = get_allowed_hosts()
+        oidc_rsa_private_key = get_oidc_rsa_key()
+
+        if self._target_app is not None:
+            appname = self._target_app["spec"]["name"]
+        else:
+            appname = self.appname_guess
+        appname = get_app_name(appname=appname)
+
+        if self._AWS_REGION:
+            region_guess = self._AWS_REGION
+        elif self._target_app and self._target_app["region"]["data_centers"][0]:
+            region_guess = self._target_app["region"]["data_centers"][0]
+        else:
+            region_guess = None
+        logger.debug("Get regions with default of {}".format(region_guess))
+        aws_region = get_aws_region(client=self.do_client, region_slug=region_guess)
+
+        session = boto3.session.Session()
+        s3client = session.client('s3',
+                                  endpoint_url='https://{}.digitaloceanspaces.com'.format(
+                                      aws_region),
+                                  aws_access_key_id=self._AWS_ACCESS_KEY_ID,
+                                  aws_secret_access_key=self._AWS_SECRET_ACCESS_KEY)
+
+        logger.debug("Getting spaces")
+        spacename = get_spaces(s3client=s3client)
+        rootfolder = get_root_folder(s3client=s3client, space=spacename,
+                                     component_name=self.component_name)
+
+        get_media_folder(s3client=s3client, space=spacename,
+                         root_folder=rootfolder)
+
+        aws_s3_endpoint_url = "https://{}.{}.digitaloceanspaces.com".format(spacename,
+                                                                            aws_region)
+
+        aws_storage_bucket_name = rootfolder
+        aws_location = rootfolder
+        disable_collectstatic = "1"
+
+        cluster_guess = self._target_app["spec"]["databases"][0]["cluster_name"] if \
+            self._target_app and self._target_app["spec"][
+                "databases"] else "db-postgresql"
+        logger.debug("Get clusters with default of {}".format(cluster_guess))
+        cluster = get_cluster(client=self.do_client, cluster_name=cluster_guess)
+
+        pool_guess = self.app_prefix + "-pool" if self.app_prefix else "pool"
+        logger.debug("Get pools with default of {}".format(pool_guess))
+        pool = get_pool(client=self.do_client, cluster=cluster, pool_name=pool_guess)
+
+        database_url = '${' + cluster["name"] + '.' + pool["name"] + '.DATABASE_URL}'
+
+        domain_info = get_domain_info(existing_app=self._target_app, domain=self.domain,
+                                      zone=self.zone)
+
+        domain = domain_info["domain"]
+        zone = domain_info["zone"]
+        cluster_name = cluster["name"]
+        database_name = pool["db"]
+        database_user = pool["user"]
+
+        django_root_module = get_django_root_module(module_guess=self.app_prefix)
+        self.django_user_module = get_django_user_module(django_user_module=self.django_user_module)
+
+        envvars = {
+            self.secret_key_env_key: self._secret_key,
+            "DEBUG": self.debug,
+            self.allowed_hosts_env_key: allowed_hosts,
+            "OIDC_RSA_PRIVATE_KEY": oidc_rsa_private_key,
+            "AWS_ACCESS_KEY_ID": self._AWS_ACCESS_KEY_ID,
+            "AWS_SECRET_ACCESS_KEY": self._AWS_SECRET_ACCESS_KEY,
+            "AWS_STORAGE_BUCKET_NAME": aws_storage_bucket_name,
+            "AWS_S3_ENDPOINT_URL": aws_s3_endpoint_url,
+            "AWS_LOCATION": aws_location,
+            "DISABLE_COLLECTSTATIC": disable_collectstatic,
+            "DATABASE_URL": database_url,
+        }
+        spec_vars = {
+            "envvars": envvars,
+            "region": aws_region,
+            "appname": appname,
+            "component_name": self.component_name,
+            "domain": domain,
+            "zone": zone,
+            "database_cluster_name": cluster_name,
+            "database_name": database_name,
+            "database_user": database_user,
+            "gh_repo": self.gh_repo,
+            "gh_branch": self.gh_branch,
+            "django_user_module": self.django_user_module,
+            "django_root_module": django_root_module,
+            "secret_key_env_key": self.secret_key_env_key,
+            "allowed_hosts_env_key": self.allowed_hosts_env_key,
+        }
+        self._app_spec = build_app_spec_file(env_obj=spec_vars)
 
 
 def start():
     temphelper = Helper()
-    temphelper.menu()
+    temphelper.submenu_manage_apps()
 
 
 if __name__ == '__main__':
