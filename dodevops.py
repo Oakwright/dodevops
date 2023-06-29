@@ -542,6 +542,7 @@ class Helper:
 
     # Django info
     django_user_module = None
+    django_root_module = None
     secret_key_env_key = None
     _secret_key = None
     allowed_hosts_env_key = None
@@ -646,6 +647,11 @@ class Helper:
         potential_var_names = ["app_prefix", "prefix", "app_name"]
         self.app_prefix = _get_env_var_from_list_or_keep_original(potential_var_names,
                                                                   self.app_prefix,
+                                                                  override)
+
+        potential_var_names = ["django_root_module"]
+        self.django_root_module = _get_env_var_from_list_or_keep_original(potential_var_names,
+                                                                  self.django_root_module,
                                                                   override)
 
         potential_var_names = ["gh_repo"]
@@ -806,7 +812,7 @@ class Helper:
         database_name = pool["db"]
         database_user = pool["user"]
 
-        django_root_module = get_django_root_module(module_guess=self.app_prefix)
+        django_root_module = get_django_root_module(module_guess=self.django_root_module)
         self.django_user_module = get_django_user_module(django_user_module=self.django_user_module)
 
         envvars = {
