@@ -32,7 +32,7 @@ Storing the token in the .env file is convenient but it is not the most secure, 
 
 If you want more info about DO tokens, see here: https://docs.digitalocean.com/reference/api/create-personal-access-token/
 
-## Generate DO Spaces 
+## Generate DO Spaces Key
 
 A DO Spaces key is required for storing a media upload folder, as app platform doesn't have storage. 
 
@@ -49,6 +49,12 @@ You can put the values in an .env file, or enter it at runtime.
 Protect the token well.
 
 To learn more about DO spaces keys, go here: https://docs.digitalocean.com/products/spaces/how-to/manage-access/#access-keys
+
+## Create a DO Spaces S3 bucket
+
+You must create an S3 bucket on DO's web interface:
+
+https://cloud.digitalocean.com/spaces/new
 
 ## Filling out .env file
 
