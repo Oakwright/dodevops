@@ -1,7 +1,9 @@
 import json
 import logging
 import secrets
-
+import psycopg2
+from psycopg2 import sql
+import requests
 import boto3
 from dotenv import load_dotenv
 import os
@@ -364,7 +366,8 @@ def get_spaces(s3client):
 
 
 def create_folder(s3client, space, component_name, parent_folder=""):
-    folder_name = inquirer.text(message="Please enter a folder name", default=component_name)
+    folder_name = inquirer.text(message="Please enter a folder name",
+                                default=component_name)
     if folder_name:
         s3client.put_object(Bucket=space, Key=parent_folder + folder_name + "/")
         return folder_name
@@ -438,7 +441,7 @@ def get_media_folder(s3client, space, media_folder="media",
             found_folder = create_folder(s3client, space, media_folder, root_folder + '/')
 
 
-def get_cluster(client, cluster_name="db-postgresql"):
+def get_cluster(client, cluster_name="db-postgresql", region=None, prefix=None):
     chosen_cluster = None
     while not chosen_cluster:
         db_cluster_resp = client.databases.list_clusters()
@@ -453,10 +456,11 @@ def get_cluster(client, cluster_name="db-postgresql"):
                         "Found default cluster {}".format(default_db_cluster['name']))
                 elif default_db_cluster is None and cluster_name in c['name']:
                     default_db_cluster = c
-                    logger.debug("Cluster {} contains {}".format(default_db_cluster['name'],
-                                                                 cluster_name))
+                    logger.debug(
+                        "Cluster {} contains {}".format(default_db_cluster['name'],
+                                                        cluster_name))
 
-            options.append(None)
+            options.append(("$$ Create new cluster", None))
             questions = [
                 inquirer.List('cluster',
                               message="Which cluster?",
@@ -470,17 +474,193 @@ def get_cluster(client, cluster_name="db-postgresql"):
             print("No clusters found")
             chosen_cluster = None
         if not chosen_cluster:
-            print(
-                "No cluster found, please create a postgres one here: https://cloud.digitalocean.com/databases/new")
-            answer = inquirer.prompt([inquirer.Confirm('retry',
-                                                       message="Do you want to retry?")])
-            if not answer["retry"]:
-                print("Aborting")
-                return None
+            create_db_cluster(client, region=region, suffix=prefix)
+            # print(
+            #     "No cluster found, please create a postgres one here: https://cloud.digitalocean.com/databases/new")
+            # answer = inquirer.prompt([inquirer.Confirm('retry',
+            #                                            message="Do you want to retry?")])
+            # if not answer["retry"]:
+            #     print("Aborting")
+            #     return None
     return chosen_cluster
 
 
-def get_pool(client, cluster, pool_name="pool"):
+def create_db(client, cluster=None, database_name=None):
+    if not cluster:
+        cluster = get_cluster(client)
+    database_name = inquirer.text("What would you like the database name to be?",
+                                  default=database_name)
+    body = {
+        "name": database_name,
+    }
+    result = client.databases.add(database_cluster_uuid=cluster["id"], body=body)
+    return result["db"]["name"]
+
+
+def get_database(client, cluster, skip_defaultdb=True, database_name=None):
+    if cluster:
+        chosen_db = None
+        while not chosen_db:
+            dbcount = len(cluster["db_names"])
+            if dbcount > 0:
+                default_db = None
+                options = []
+                for d in cluster["db_names"]:
+                    if skip_defaultdb and d == "defaultdb":
+                        continue
+                    options.append(d)
+                    if d == database_name:
+                        logger.debug("Found default database {}".format(d))
+                        default_db = d
+                options.append(("Create new database", None))
+                questions = [
+                    inquirer.List('database',
+                                  message="Which database?",
+                                  choices=options, default=default_db,
+                                  ),
+                ]
+                answers = inquirer.prompt(questions)
+                pickedoption = answers['database']
+                chosen_db = pickedoption
+                # print("Using database {}".format(pickedoption))
+                # return pickedoption
+            else:
+                print("No databases found")
+                chosen_db = None
+            if not chosen_db:
+                chosen_db = create_db(client=client, cluster=cluster,
+                                      database_name=database_name)
+        return chosen_db
+
+
+def create_db_user(client, cluster=None, user_name=None, app_name=None):
+    if not cluster:
+        cluster = get_cluster(client=client)
+
+    if not user_name and app_name:
+        user_name = app_name + "-user"
+    else:
+        user_name = "django-user"
+
+    user_name = inquirer.text(message="Enter database username to create: ",
+                              default=user_name)
+
+    body = {
+        "name": user_name
+    }
+    result = client.databases.add_user(cluster["id"], body)
+
+    return result["user"]["name"]
+
+
+def get_db_user(client, cluster=None, ignore_admin=True):
+    if not cluster:
+        cluster = get_cluster(client=client)
+    choice = None
+    while not choice:
+
+        user_list = client.databases.list_users(cluster["id"])
+
+        if ignore_admin:
+            user_list = [u["name"] for u in user_list["users"] if u["name"] != "doadmin"]
+        user_list.append(("* New User *", None))
+
+        choice = inquirer.list_input("Choose a user",
+                                     choices=user_list)
+
+        if not choice:
+            choice = create_db_user(client=client, cluster=cluster)
+
+    return choice
+
+
+def create_db_pool(client, cluster=None, app_name=None, project_name=None, region=None):
+    if not cluster:
+        cluster = get_cluster(client, region=region, prefix=project_name)
+
+    database = get_database(client, cluster)
+    user = get_db_user(client=client, cluster=cluster)
+
+    pool_name = inquirer.text(message="Enter connection pool name to create: ",
+                              default=app_name + "-pool")
+
+    body = {
+        "name": pool_name,
+        "mode": "transaction",
+        "size": 3,
+        "db": database,
+        "user": user
+    }
+
+    result = client.databases.add_connection_pool(cluster["id"], body)
+    return result["pool"]["name"]
+
+
+def get_doadmin_connection_string(database, cluster):
+    # "postgresql://doadmin:AVNS_7b4RI71UbZoNsF9TR42@db-postgresql-ams3-possumnet-do-user-11185503-0.b.db.ondigitalocean.com:25060/crawlydb?sslmode=require"
+    # 'postgresql://doadmin:AVNS_7b4RI71UbZoNsF9TR42@db-postgresql-ams3-possumnet-do-user-11185503-0.b.db.ondigitalocean.com:25060/defaultdb?sslmode=require'
+    connection_string = "postgresql://{}:{}@{}:{}/{}?sslmode=require"
+    connection_string = connection_string.format(
+        cluster["connection"]["user"],
+        cluster["connection"]["password"],
+        cluster["connection"]["host"],
+        cluster["connection"]["port"],
+        database
+    )
+    print(connection_string)
+    return connection_string
+
+
+def grant_db_rights_to_django_user(client, cluster=None, user=None, database=None):
+    if not cluster:
+        cluster = get_cluster(client=client)
+    if not user:
+        user = get_db_user(client=client, cluster=cluster)
+    if not database:
+        database = get_database(client=client, cluster=cluster)
+
+    if inquirer.confirm(
+            "The public IP address of this machine will be added to the database firewall temporarily. Continue?",
+            default=True):
+        add_local_ip_to_db_firewall(client, cluster=cluster)
+        connection_string = get_doadmin_connection_string(database=database,
+                                                          cluster=cluster)
+        connection = psycopg2.connect(connection_string)
+
+        with connection.cursor() as cursor:
+            cursor.execute(sql.SQL("ALTER ROLE {} SET client_encoding TO 'utf8';").format(
+                sql.Identifier(user)))
+            cursor.execute(sql.SQL(
+                "ALTER ROLE {} SET default_transaction_isolation TO 'read committed';").format(
+                sql.Identifier(user)))
+            cursor.execute(sql.SQL("ALTER ROLE {} SET timezone TO 'UTC';").format(
+                sql.Identifier(user)))
+
+            cursor.execute(sql.SQL("GRANT ALL PRIVILEGES ON DATABASE {} TO {};").format(
+                sql.Identifier(database), sql.Identifier(user)))
+
+            cursor.execute(sql.SQL("GRANT CREATE ON DATABASE {} TO {};").format(
+                sql.Identifier(database), sql.Identifier(user)))
+            cursor.execute(sql.SQL("GRANT USAGE, CREATE ON SCHEMA public TO {};").format(
+                sql.Identifier(user)))
+            cursor.execute(sql.SQL(
+                "GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO {};").format(
+                sql.Identifier(user)))
+            cursor.execute(sql.SQL(
+                "GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO {};").format(
+                sql.Identifier(user)))
+
+            cursor.execute(
+                sql.SQL("ALTER USER {} CREATEDB;").format(sql.Identifier(user)))
+
+        if inquirer.confirm(
+                "The public IP address of this machine can now be removed from the database firewall. Continue?",
+                default=True):
+            remove_local_ip_from_db_firewall(client, cluster=cluster)
+        remove_local_ip_from_db_firewall(client, cluster=cluster)
+
+
+def get_pool(client, cluster, pool_name="pool", app_name=None, project_name=None):
     chosen_pool = None
     while not chosen_pool:
         pool_default = None
@@ -497,7 +677,7 @@ def get_pool(client, cluster, pool_name="pool"):
                     pool_default = p
                     logger.debug(
                         "Pool {} contains {}".format(pool_default["name"], pool_name))
-            pooloptions.append(None)
+            pooloptions.append(("Create new pool", None))
             questions = [
                 inquirer.List('pool',
                               message="Which pool?",
@@ -512,13 +692,14 @@ def get_pool(client, cluster, pool_name="pool"):
             print("No connection pools found")
             chosen_pool = None
         if not chosen_pool:
-            print(
-                "No pool found, please create a pool here: https://cloud.digitalocean.com/databases/")
-            answer = inquirer.prompt([inquirer.Confirm('retry',
-                                                       message="Do you want to retry?")])
-            if not answer["retry"]:
-                print("Aborting")
-                return None
+            create_db_pool(client, cluster, app_name=app_name, project_name=project_name)
+            # print(
+            #     "No pool found, please create a pool here: https://cloud.digitalocean.com/databases/")
+            # answer = inquirer.prompt([inquirer.Confirm('retry',
+            #                                            message="Do you want to retry?")])
+            # if not answer["retry"]:
+            #     print("Aborting")
+            #     return None
     return chosen_pool
 
 
@@ -531,7 +712,8 @@ def get_root_domain(domain):
     return zone
 
 
-def get_domain_info(existing_app=None, domain=None, zone=None, client=None, prefix="test"):
+def get_domain_info(existing_app=None, domain=None, zone=None, client=None,
+                    prefix="test"):
     logger.debug("Getting domain info")
     if not domain and client:
         result = client.domains.list()
@@ -624,7 +806,8 @@ def clean_debug_value(debugvalue=None):
 def clean_allowed_hosts_env_key(allowed_hosts_env_key):
     if not allowed_hosts_env_key:
         allowed_hosts_env_key = inquirer.text(
-            "What environment variable holds your allowed hosts?", default="ALLOWED_HOSTS")
+            "What environment variable holds your allowed hosts?",
+            default="ALLOWED_HOSTS")
     return allowed_hosts_env_key
 
 
@@ -639,7 +822,8 @@ def get_gh_repo(existing_app=None, app_name=None, repo=None, branch=None):
                 branch = branch or service["github"]["branch"]
     if repo is None or branch is None:
         repo = repo or inquirer.text("What is the github repo for your app?")
-        branch = branch or inquirer.text("What branch should we build from?", default="main")
+        branch = branch or inquirer.text("What branch should we build from?",
+                                         default="main")
     return {"repo": repo, "branch": branch}
 
 
@@ -660,8 +844,122 @@ def get_aws_secret_access_key():
     else:
         print("No AWS_SECRET_ACCESS_KEY found")
         print("https://cloud.digitalocean.com/account/api/spaces")
-        promptentry = inquirer.password(message="Please enter your AWS_SECRET_ACCESS_KEY and press enter to continue: ")
+        promptentry = inquirer.password(
+            message="Please enter your AWS_SECRET_ACCESS_KEY and press enter to continue: ")
         return promptentry
+
+
+def create_db_cluster(client, cluster_name=None, region=None, suffix=None):
+    if not region:
+        region = get_aws_region(client)
+    if not cluster_name and suffix:
+        cluster_name = "db-postgresql-" + region + "-" + suffix
+    else:
+        cluster_name = "db-postgresql-" + region + "-shared"
+    print(
+        "A database cluster can contain multiple databases and can be shared across multiple apps")
+    print(
+        "If you plan on sharing the cluster across multiple apps, you may want to name it something generic")
+    cluster_name = inquirer.text("What would you like the cluster name to be?",
+                                 default=cluster_name)
+
+    body = {
+        "name": cluster_name,
+        "engine": "pg",
+        "version": "15",
+        "region": region,
+        "size": "db-s-1vcpu-1gb",
+        "num_nodes": 1,
+    }
+
+    confirm = inquirer.confirm(
+        "Warning! Continuing will incur a cost on your DigitalOcean account, continue?",
+        default=False)
+    if confirm:
+        print('Creating database cluster')
+        client.create_db_cluster(body=body)
+
+
+def add_app_to_db_firewall(client, app_name=None):
+    app = get_app(client, app_name)
+    cluster = get_cluster(client)
+
+    get_resp = client.databases.list_firewall_rules(database_cluster_uuid=cluster["id"])
+
+    firewall_rules = get_resp["rules"]
+    app_uuid = app["id"]
+
+    # Check if app is already in firewall rules
+    for rule in firewall_rules:
+        if rule["type"] == "app" and rule["value"] == app_uuid:
+            print("App already in firewall rules")
+            return
+
+    firewall_rules.append({
+        "type": "app",
+        "value": app_uuid,
+    })
+    client.databases.update_firewall_rules(
+        database_cluster_uuid=cluster["id"], body=get_resp)
+
+
+def get_local_ip():
+    ip = requests.get('https://checkip.amazonaws.com').text.strip()
+    return ip
+
+
+def add_local_ip_to_db_firewall(client, cluster=None):
+    if not cluster:
+        cluster = get_cluster(client)
+    get_resp = client.databases.list_firewall_rules(database_cluster_uuid=cluster["id"])
+
+    firewall_rules = get_resp["rules"]
+    local_ip = get_local_ip()
+
+    # Check if IP is already in firewall rules
+    for rule in firewall_rules:
+        if rule["type"] == "ip_addr" and rule["value"] == local_ip:
+            print("IP already in firewall rules")
+            return
+    firewall_rules.append({
+        "type": "ip_addr",
+        "value": local_ip,
+    })
+    client.databases.update_firewall_rules(
+        database_cluster_uuid=cluster["id"], body=get_resp)
+
+
+def remove_local_ip_from_db_firewall(client, cluster=None):
+    if not cluster:
+        cluster = get_cluster(client)
+    get_resp = client.databases.list_firewall_rules(database_cluster_uuid=cluster["id"])
+
+    firewall_rules = get_resp["rules"]
+    local_ip = get_local_ip()
+
+    new_firewall_rules = []
+    for rule in firewall_rules:
+        if rule["type"] == "ip_addr" and rule["value"] == local_ip:
+            continue
+        new_firewall_rules.append(rule)
+    get_resp["rules"] = new_firewall_rules
+    client.databases.update_firewall_rules(
+        database_cluster_uuid=cluster["id"], body=get_resp)
+
+
+def create_s3_space(aws_access_key_id, aws_secret_access_key, aws_region=None,
+                    space_name=None):
+    session = boto3.session.Session()
+    s3client = session.client('s3',
+                              endpoint_url='https://{}.digitaloceanspaces.com'.format(
+                                  aws_region),
+                              aws_access_key_id=aws_access_key_id,
+                              aws_secret_access_key=aws_secret_access_key)
+    space_name = inquirer.text("What would you like to name your space?",
+                               default=space_name)
+    if inquirer.confirm(
+            "Creating a new space will cost additional money, do you want to continue?"):
+        s3client.MakeBucket(space_name, aws_region)
 
 
 class Helper:
@@ -825,7 +1123,8 @@ class Helper:
         self._secret_key = _get_env_var_from_list_or_keep_original(
             potential_var_names, self._secret_key, override)
 
-        potential_var_names = ["allowed_hosts_env_key", "allowed_hosts", "ALLOWED_HOSTS", "ALLOWED_HOSTS_ENV_KEY"]
+        potential_var_names = ["allowed_hosts_env_key", "allowed_hosts", "ALLOWED_HOSTS",
+                               "ALLOWED_HOSTS_ENV_KEY"]
         self.allowed_hosts_env_key = _get_env_var_from_list_or_keep_original(
             potential_var_names, self.allowed_hosts_env_key, override)
 
@@ -858,16 +1157,27 @@ class Helper:
                 logger.debug("App spec found in memory")
                 options.append(("Save App Spec to file from memory", "save_to_file"))
                 # options.append(("Edit App Spec in memory", "edit"))
-                # options.append(("Create App from App Spec in memory", "create_do_from_memory"))
                 options.append(
-                    ("Update App from App Spec in memory", "update_do_from_memory"))
+                    ("$ Create App from App Spec in memory", "create_do_from_memory"))
+                options.append(
+                    ("$ Update App from App Spec in memory", "update_do_from_memory"))
                 options.append(("Dump App Spec from memory", "dump_from_memory"))
             options.append(
                 ("Load App Spec from existing app into memory", "load_from_existing_app"))
             options.append(("Load App Spec from file into memory", "load_from_file"))
             options.append(
                 ("Create App Spec from scratch into memory", "load_from_user_input"))
-
+            options.append(("$$ Create Database Cluster", "create_db_cluster"))
+            options.append(("$$ Create S3 Space", "create_s3_space"))
+            options.append(("-- Create Database Connection Pool", "create_db_pool"))
+            options.append(("-- Create Database User", "create_db_user"))
+            options.append(("-- Create Database", "create_db"))
+            options.append(("-- Grant DB permissions to DB user", "grant_user"))
+            options.append(("-- Add App to DB Firewall", "add_app_to_db_firewall"))
+            options.append(
+                ("-- Add local IP to DB Firewall", "add_local_ip_to_db_firewall"))
+            options.append(("-- Remove local IP from DB Firewall",
+                            "remove_local_ip_from_db_firewall"))
             options.append(("Exit", "exit"))
             questions = [
                 inquirer.List('whatdo',
@@ -900,6 +1210,30 @@ class Helper:
                                          potential_spec=self._app_spec)
             elif pickedoption == "load_from_user_input":
                 self.build_app_spec_from_user_input()
+            elif pickedoption == "create_db_cluster":
+                create_db_cluster(client=self.do_client, region=self._AWS_REGION,
+                                  suffix=self.app_prefix)
+            elif pickedoption == "create_db_pool":
+                create_db_pool(client=self.do_client, region=self._AWS_REGION,
+                               app_name=self.appname_guess,
+                               project_name=self.component_name)
+            elif pickedoption == "create_db_user":
+                create_db_user(client=self.do_client, app_name=self.appname_guess)
+            elif pickedoption == "create_db":
+                create_db(client=self.do_client, database_name=self.appname_guess)
+            elif pickedoption == "grant_user":
+                grant_db_rights_to_django_user(client=self.do_client)
+            elif pickedoption == "add_app_to_db_firewall":
+                add_app_to_db_firewall(client=self.do_client,
+                                       app_name=self.appname_guess)
+            elif pickedoption == "add_local_ip_to_db_firewall":
+                add_local_ip_to_db_firewall(client=self.do_client)
+            elif pickedoption == "remove_local_ip_from_db_firewall":
+                remove_local_ip_from_db_firewall(client=self.do_client)
+            elif pickedoption == "create_s3_space":
+                create_s3_space(self._AWS_ACCESS_KEY_ID, self._AWS_SECRET_ACCESS_KEY,
+                                aws_region=self._AWS_REGION,
+                                space_name="space-" + self.appname_guess)
 
     def build_app_spec_from_user_input(self):
         allowed_hosts = get_allowed_hosts()
@@ -916,13 +1250,17 @@ class Helper:
             appname = self.appname_guess
         appname = get_app_name(appname=appname)
 
-        if not self._oidc or inquirer.confirm("Do you want to generate a new OIDC RSA key?", default=True):
+        if not self._oidc or inquirer.confirm(
+                "Do you want to generate a new OIDC RSA key?", default=True):
             self._oidc = get_oidc_rsa_key()
         oidc_rsa_private_key = self._oidc
 
         if not self.secret_key_env_key:
-            self.secret_key_env_key = inquirer.text(message="What is the name of the environment variable that contains the Django secret key?", default="SECRET_KEY")
-        if not self._secret_key or inquirer.confirm("Do you want to generate a new Django secret key?", default=False):
+            self.secret_key_env_key = inquirer.text(
+                message="What is the name of the environment variable that contains the Django secret key?",
+                default="SECRET_KEY")
+        if not self._secret_key or inquirer.confirm(
+                "Do you want to generate a new Django secret key?", default=False):
             self._secret_key = secrets.token_urlsafe()
 
         if self._AWS_REGION:
@@ -952,7 +1290,8 @@ class Helper:
         while not spacename:
             spacename = get_spaces(s3client=s3client)
             if not spacename:
-                print("No spaces found, please create one here: https://cloud.digitalocean.com/spaces/new")
+                print(
+                    "No spaces found, please create one here: https://cloud.digitalocean.com/spaces/new")
                 answer = inquirer.prompt([inquirer.Confirm('retry',
                                                            message="Do you want to retry?")])
                 if not answer["retry"]:
@@ -983,16 +1322,19 @@ class Helper:
             self._target_app and self._target_app["spec"][
                 "databases"] else "db-postgresql"
         logger.debug("Get clusters with default of {}".format(cluster_guess))
-        cluster = get_cluster(client=self.do_client, cluster_name=cluster_guess)
+        cluster = get_cluster(client=self.do_client, cluster_name=cluster_guess,
+                              region=aws_region, prefix=self.app_prefix)
 
         pool_guess = self.app_prefix + "-pool" if self.app_prefix else "pool"
         logger.debug("Get pools with default of {}".format(pool_guess))
-        pool = get_pool(client=self.do_client, cluster=cluster, pool_name=pool_guess)
+        pool = get_pool(client=self.do_client, cluster=cluster, pool_name=pool_guess,
+                        app_name=appname, project_name=self.component_name)
 
         database_url = '${' + cluster["name"] + '.' + pool["name"] + '.DATABASE_URL}'
 
         domain_info = get_domain_info(existing_app=self._target_app, domain=self.domain,
-                                      zone=self.zone, client=self.do_client, prefix=self.app_prefix)
+                                      zone=self.zone, client=self.do_client,
+                                      prefix=self.app_prefix)
 
         domain = domain_info["domain"]
         zone = domain_info["zone"]
@@ -1000,13 +1342,15 @@ class Helper:
         database_name = pool["db"]
         database_user = pool["user"]
 
-        rootmoduleguess = self.django_root_module or extract_prefix(self.component_name) or self.app_prefix
+        rootmoduleguess = self.django_root_module or extract_prefix(
+            self.component_name) or self.app_prefix
         django_root_module = get_django_root_module(module_guess=rootmoduleguess)
         self.django_user_module = get_django_user_module(
             django_user_module=self.django_user_module)
 
         self.debug = clean_debug_value(self.debug)
-        self.allowed_hosts_env_key = clean_allowed_hosts_env_key(self.allowed_hosts_env_key)
+        self.allowed_hosts_env_key = clean_allowed_hosts_env_key(
+            self.allowed_hosts_env_key)
 
         envvars = {
             self.secret_key_env_key: self._secret_key,
