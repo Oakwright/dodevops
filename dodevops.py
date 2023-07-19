@@ -497,7 +497,7 @@ def create_db(client, cluster=None, database_name=None):
     return result["db"]["name"]
 
 
-def get_database(client, cluster, skip_defaultdb=True, database_name=None):
+def get_database(client, cluster, database_name, skip_defaultdb=True):  # , database_name=None):
     if cluster:
         chosen_db = None
         while not chosen_db:
@@ -553,7 +553,7 @@ def create_db_user(client, cluster=None, user_name=None, app_name=None):
     return result["user"]["name"]
 
 
-def get_db_user(client, cluster=None, ignore_admin=True):
+def get_db_user(client, cluster=None, ignore_admin=True, app_name=None):
     if not cluster:
         cluster = get_cluster(client=client)
     choice = None
@@ -569,7 +569,7 @@ def get_db_user(client, cluster=None, ignore_admin=True):
                                      choices=user_list)
 
         if not choice:
-            choice = create_db_user(client=client, cluster=cluster)
+            choice = create_db_user(client=client, cluster=cluster, app_name=app_name)
 
     return choice
 
@@ -578,8 +578,8 @@ def create_db_pool(client, cluster=None, app_name=None, project_name=None, regio
     if not cluster:
         cluster = get_cluster(client, region=region, prefix=project_name)
 
-    database = get_database(client, cluster)
-    user = get_db_user(client=client, cluster=cluster)
+    database = get_database(client, cluster, database_name=app_name)
+    user = get_db_user(client=client, cluster=cluster, app_name=app_name)
 
     pool_name = inquirer.text(message="Enter connection pool name to create: ",
                               default=app_name + "-pool")
@@ -611,13 +611,13 @@ def get_doadmin_connection_string(database, cluster):
     return connection_string
 
 
-def grant_db_rights_to_django_user(client, cluster=None, user=None, database=None):
+def grant_db_rights_to_django_user(client, app_name, cluster=None, user=None, database=None):
     if not cluster:
         cluster = get_cluster(client=client)
     if not user:
-        user = get_db_user(client=client, cluster=cluster)
+        user = get_db_user(client=client, cluster=cluster, app_name=app_name)
     if not database:
-        database = get_database(client=client, cluster=cluster)
+        database = get_database(client=client, cluster=cluster, database_name=app_name)
 
     if inquirer.confirm(
             "The public IP address of this machine will be added to the database firewall temporarily. Continue?",
@@ -1222,7 +1222,7 @@ class Helper:
             elif pickedoption == "create_db":
                 create_db(client=self.do_client, database_name=self.appname_guess)
             elif pickedoption == "grant_user":
-                grant_db_rights_to_django_user(client=self.do_client)
+                grant_db_rights_to_django_user(client=self.do_client, app_name=self.appname_guess)
             elif pickedoption == "add_app_to_db_firewall":
                 add_app_to_db_firewall(client=self.do_client,
                                        app_name=self.appname_guess)
