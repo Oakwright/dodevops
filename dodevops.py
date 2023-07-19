@@ -341,28 +341,29 @@ def get_aws_region(client, region_slug=None):
         return "ams3"
 
 
-def get_spaces(s3client):
-    space_resp = s3client.list_buckets()
-    spacecount = len(space_resp['Buckets'])
-    if spacecount > 0:
-        options = []
-        for s in space_resp['Buckets']:
-            options.append(s['Name'])
-        # options.append(None)
-        questions = [
-            inquirer.List('space',
-                          message="Which space?",
-                          choices=options,
-                          default=0,
-                          ),
-        ]
-        answers = inquirer.prompt(questions)
-        pickedoption = answers['space']
-        logger.debug("Using space {}".format(pickedoption))
-        return pickedoption
-    else:
-        print("No spaces found")
-        return None
+def get_spaces(s3client, appname):
+    pickedoption = None
+    while not pickedoption:
+        space_resp = s3client.list_buckets()
+        spacecount = len(space_resp['Buckets'])
+        if spacecount > 0:
+            options = []
+            for s in space_resp['Buckets']:
+                options.append(s['Name'])
+            options.append(("$$ Create New Space $$", None))
+            questions = [
+                inquirer.List('space',
+                              message="Which space?",
+                              choices=options,
+                              default=appname,
+                              ),
+            ]
+            answers = inquirer.prompt(questions)
+            pickedoption = answers['space']
+            if not pickedoption:
+                create_s3_space(s3client=s3client, space_name="space-" + appname)
+            logger.debug("Using space {}".format(pickedoption))
+    return pickedoption
 
 
 def create_folder(s3client, space, component_name, parent_folder=""):
@@ -566,7 +567,7 @@ def get_db_user(client, cluster=None, ignore_admin=True, app_name=None):
         user_list.append(("* New User *", None))
 
         choice = inquirer.list_input("Choose a user",
-                                     choices=user_list)
+                                     choices=user_list, default=app_name + "-user")
 
         if not choice:
             choice = create_db_user(client=client, cluster=cluster, app_name=app_name)
@@ -593,6 +594,9 @@ def create_db_pool(client, cluster=None, app_name=None, project_name=None, regio
     }
 
     result = client.databases.add_connection_pool(cluster["id"], body)
+
+    grant_db_rights_to_django_user(client=client, cluster=cluster, database=database, user=user)
+
     return result["pool"]["name"]
 
 
@@ -607,11 +611,10 @@ def get_doadmin_connection_string(database, cluster):
         cluster["connection"]["port"],
         database
     )
-    print(connection_string)
     return connection_string
 
 
-def grant_db_rights_to_django_user(client, app_name, cluster=None, user=None, database=None):
+def grant_db_rights_to_django_user(client, app_name=None, cluster=None, user=None, database=None):
     if not cluster:
         cluster = get_cluster(client=client)
     if not user:
@@ -661,6 +664,7 @@ def grant_db_rights_to_django_user(client, app_name, cluster=None, user=None, da
 
 
 def get_pool(client, cluster, pool_name="pool", app_name=None, project_name=None):
+    print(pool_name)
     chosen_pool = None
     while not chosen_pool:
         pool_default = None
@@ -947,14 +951,15 @@ def remove_local_ip_from_db_firewall(client, cluster=None):
         database_cluster_uuid=cluster["id"], body=get_resp)
 
 
-def create_s3_space(aws_access_key_id, aws_secret_access_key, aws_region=None,
-                    space_name=None):
+def create_s3_space(aws_access_key_id=None, aws_secret_access_key=None, aws_region=None,
+                    space_name=None, s3client=None):
     session = boto3.session.Session()
-    s3client = session.client('s3',
-                              endpoint_url='https://{}.digitaloceanspaces.com'.format(
-                                  aws_region),
-                              aws_access_key_id=aws_access_key_id,
-                              aws_secret_access_key=aws_secret_access_key)
+    if not s3client:
+        s3client = session.client('s3',
+                                  endpoint_url='https://{}.digitaloceanspaces.com'.format(
+                                      aws_region),
+                                  aws_access_key_id=aws_access_key_id,
+                                  aws_secret_access_key=aws_secret_access_key)
     space_name = inquirer.text("What would you like to name your space?",
                                default=space_name)
     if inquirer.confirm(
@@ -1288,7 +1293,7 @@ class Helper:
         logger.debug("Getting spaces")
         spacename = None
         while not spacename:
-            spacename = get_spaces(s3client=s3client)
+            spacename = get_spaces(s3client=s3client, appname=appname)
             if not spacename:
                 print(
                     "No spaces found, please create one here: https://cloud.digitalocean.com/spaces/new")
@@ -1325,7 +1330,7 @@ class Helper:
         cluster = get_cluster(client=self.do_client, cluster_name=cluster_guess,
                               region=aws_region, prefix=self.app_prefix)
 
-        pool_guess = self.app_prefix + "-pool" if self.app_prefix else "pool"
+        pool_guess = appname + "-pool" if appname else "pool"
         logger.debug("Get pools with default of {}".format(pool_guess))
         pool = get_pool(client=self.do_client, cluster=cluster, pool_name=pool_guess,
                         app_name=appname, project_name=self.component_name)
