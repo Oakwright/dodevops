@@ -64,6 +64,9 @@ def update_app_from_app_spec(client, target_app, app_spec):
         print("Aborting")
         return None
     response = client.apps.update(id=target_app["id"], body=update_body)
+    if inquirer.confirm("Do you want to add the app to the db firewall?", default=True):
+        add_app_to_db_firewall(client, app_name=app_spec["name"])
+    print("If this is a new subdomain your browser may display SSL_ERROR_NO_CYPHER_OVERLAP error until the domain is verified ~5 minutes")
     return response
 
 
@@ -80,6 +83,9 @@ def create_app_from_app_spec(client, potential_spec):
         print("Aborting")
         return None
     response = client.apps.create(body=validate_body)
+    if inquirer.confirm("Do you want to add the app to the db firewall?", default=True):
+        add_app_to_db_firewall(client, app_name=potential_spec["name"])
+    print("If this is a new subdomain your browser may display SSL_ERROR_NO_CYPHER_OVERLAP error until the domain is verified ~5 minutes")
     return response
 
 
@@ -198,7 +204,7 @@ def populate_app_spec_services(app_spec, component_name, gh_repo, gh_branch, env
         },
         "build_command": "python manage.py makemigrations\npython manage.py makemigrations {}".format(
             django_user_module),
-        "run_command": "gunicorn --worker-tmp-dir /dev/shm {}.wsgi:application  --bind 0.0.0.0:{}".format(
+        "run_command": "python3 manage.py migrate\ngunicorn --worker-tmp-dir /dev/shm {}.wsgi:application  --bind 0.0.0.0:{}".format(
             django_root_module, port),
         "source_dir": "/",
         "environment_slug": "python",
@@ -374,8 +380,9 @@ def create_folder(s3client, space, component_name, parent_folder=""):
         return folder_name
 
 
-def get_root_folder(s3client, space, component_name="app"):
+def get_root_folder(s3client, space, component_name=None):
     return_folder = None
+    default_folder = None
     while not return_folder:
         space_resp = s3client.list_objects(Bucket=space, Delimiter='/')
 
@@ -383,12 +390,14 @@ def get_root_folder(s3client, space, component_name="app"):
             options = []
             for s in space_resp['CommonPrefixes']:
                 options.append(s['Prefix'][0:-1])
-            options.append(("* Create new folder *", "new_folder"))
+            if component_name in options:
+                default_folder = component_name
+            options.append(("Create new folder", None))
             questions = [
                 inquirer.List('folder',
                               message="Which folder?",
                               choices=options,
-                              default=component_name,
+                              default=default_folder,
                               ),
             ]
             answers = inquirer.prompt(questions)
@@ -398,7 +407,7 @@ def get_root_folder(s3client, space, component_name="app"):
         else:
             print("No folders found")
             return_folder = None
-        if not return_folder or return_folder == "new_folder":
+        if not return_folder:
             return_folder = create_folder(s3client, space, component_name)
 
     return return_folder
@@ -555,6 +564,12 @@ def create_db_user(client, cluster=None, user_name=None, app_name=None):
 
 
 def get_db_user(client, cluster=None, ignore_admin=True, app_name=None):
+    user_name = None
+    if not user_name and app_name:
+        user_name = app_name + "-user"
+    else:
+        user_name = "django-user"
+
     if not cluster:
         cluster = get_cluster(client=client)
     choice = None
@@ -564,10 +579,14 @@ def get_db_user(client, cluster=None, ignore_admin=True, app_name=None):
 
         if ignore_admin:
             user_list = [u["name"] for u in user_list["users"] if u["name"] != "doadmin"]
-        user_list.append(("* New User *", None))
+        if user_name in user_list:
+            default_user = user_name
+        else:
+            default_user = None
+        user_list.append(("Create new user", None))
 
         choice = inquirer.list_input("Choose a user",
-                                     choices=user_list, default=app_name + "-user")
+                                     choices=user_list, default=default_user)
 
         if not choice:
             choice = create_db_user(client=client, cluster=cluster, app_name=app_name)
@@ -655,6 +674,11 @@ def grant_db_rights_to_django_user(client, app_name=None, cluster=None, user=Non
 
             cursor.execute(
                 sql.SQL("ALTER USER {} CREATEDB;").format(sql.Identifier(user)))
+
+            cursor.execute(sql.SQL("ALTER DATABASE {} OWNER TO {};").format(
+                sql.Identifier(database), sql.Identifier(user)))
+
+            connection.commit()
 
         if inquirer.confirm(
                 "The public IP address of this machine can now be removed from the database firewall. Continue?",
@@ -1160,29 +1184,31 @@ class Helper:
             options = []
             if self._app_spec:
                 logger.debug("App spec found in memory")
-                options.append(("Save App Spec to file from memory", "save_to_file"))
+
                 # options.append(("Edit App Spec in memory", "edit"))
                 options.append(
-                    ("$ Create App from App Spec in memory", "create_do_from_memory"))
+                    ("$ Create App from loaded App Spec $", "create_do_from_memory"))
                 options.append(
-                    ("$ Update App from App Spec in memory", "update_do_from_memory"))
-                options.append(("Dump App Spec from memory", "dump_from_memory"))
+                    ("$ Update App from loaded App Spec $", "update_do_from_memory"))
+                options.append(("Save App Spec from memory into json file", "save_to_file"))
+                # options.append(("Dump App Spec from memory to screen", "dump_from_memory"))
+            options.append(
+                ("Load App Spec from scratch into memory", "load_from_user_input"))
             options.append(
                 ("Load App Spec from existing app into memory", "load_from_existing_app"))
-            options.append(("Load App Spec from file into memory", "load_from_file"))
-            options.append(
-                ("Create App Spec from scratch into memory", "load_from_user_input"))
-            options.append(("$$ Create Database Cluster", "create_db_cluster"))
-            options.append(("$$ Create S3 Space", "create_s3_space"))
-            options.append(("-- Create Database Connection Pool", "create_db_pool"))
-            options.append(("-- Create Database User", "create_db_user"))
-            options.append(("-- Create Database", "create_db"))
-            options.append(("-- Grant DB permissions to DB user", "grant_user"))
-            options.append(("-- Add App to DB Firewall", "add_app_to_db_firewall"))
-            options.append(
-                ("-- Add local IP to DB Firewall", "add_local_ip_to_db_firewall"))
-            options.append(("-- Remove local IP from DB Firewall",
-                            "remove_local_ip_from_db_firewall"))
+            options.append(("Load App Spec from json file into memory", "load_from_file"))
+
+            # options.append(("$$ Create Database Cluster", "create_db_cluster"))
+            # options.append(("$$ Create S3 Space", "create_s3_space"))
+            # options.append(("-- Create Database Connection Pool", "create_db_pool"))
+            # options.append(("-- Create Database User", "create_db_user"))
+            # options.append(("-- Create Database", "create_db"))
+            # options.append(("-- Grant DB permissions to DB user", "grant_user"))
+            # options.append(("-- Add App to DB Firewall", "add_app_to_db_firewall"))
+            # options.append(
+            #     ("-- Add local IP to DB Firewall", "add_local_ip_to_db_firewall"))
+            # options.append(("-- Remove local IP from DB Firewall",
+            #                 "remove_local_ip_from_db_firewall"))
             options.append(("Exit", "exit"))
             questions = [
                 inquirer.List('whatdo',
@@ -1206,7 +1232,7 @@ class Helper:
                 self.load_app_spec_from_json_file(filename=filename)
             elif pickedoption == "update_do_from_memory":
                 print("Which app would you like to update?")
-                self._target_app = get_app(client=self.do_client)
+                self._target_app = get_app(client=self.do_client, app_name=self.appname_guess)
                 update_app_from_app_spec(client=self.do_client,
                                          target_app=self._target_app,
                                          app_spec=self._app_spec)
