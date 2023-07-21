@@ -66,7 +66,8 @@ def update_app_from_app_spec(client, target_app, app_spec):
     response = client.apps.update(id=target_app["id"], body=update_body)
     if inquirer.confirm("Do you want to add the app to the db firewall?", default=True):
         add_app_to_db_firewall(client, app_name=app_spec["name"])
-    print("If this is a new subdomain your browser may display SSL_ERROR_NO_CYPHER_OVERLAP error until the domain is verified ~5 minutes")
+    print(
+        "If this is a new subdomain your browser may display SSL_ERROR_NO_CYPHER_OVERLAP error until the domain is verified ~5 minutes")
     return response
 
 
@@ -85,7 +86,8 @@ def create_app_from_app_spec(client, potential_spec):
     response = client.apps.create(body=validate_body)
     if inquirer.confirm("Do you want to add the app to the db firewall?", default=True):
         add_app_to_db_firewall(client, app_name=potential_spec["name"])
-    print("If this is a new subdomain your browser may display SSL_ERROR_NO_CYPHER_OVERLAP error until the domain is verified ~5 minutes")
+    print(
+        "If this is a new subdomain your browser may display SSL_ERROR_NO_CYPHER_OVERLAP error until the domain is verified ~5 minutes")
     return response
 
 
@@ -194,7 +196,15 @@ def populate_app_spec_databases(app_spec, database_cluster_name, database_name,
 def populate_app_spec_services(app_spec, component_name, gh_repo, gh_branch, env_list,
                                django_user_module,
                                django_root_module, deploy_on_push=True, port=8000,
-                               size_slug="basic-xxs"):
+                               size_slug="basic-xxs", bonuscommand1=None,
+                               bonuscommand2=None):
+    bonus = ""
+
+    if bonuscommand1:
+        bonus = "\n" + bonuscommand1
+    if bonuscommand2:
+        bonus = bonus + "\n" + bonuscommand2
+
     services_json = {
         "name": component_name,
         "github": {
@@ -204,8 +214,8 @@ def populate_app_spec_services(app_spec, component_name, gh_repo, gh_branch, env
         },
         "build_command": "python manage.py makemigrations\npython manage.py makemigrations {}".format(
             django_user_module),
-        "run_command": "python3 manage.py migrate\ngunicorn --worker-tmp-dir /dev/shm {}.wsgi:application  --bind 0.0.0.0:{}".format(
-            django_root_module, port),
+        "run_command": "python3 manage.py migrate{}\ngunicorn --worker-tmp-dir /dev/shm {}.wsgi:application  --bind 0.0.0.0:{}".format(
+            bonus, django_root_module, port),
         "source_dir": "/",
         "environment_slug": "python",
         "envs": env_list,
@@ -234,6 +244,9 @@ def build_app_spec_file(env_obj):
     django_user_module = env_obj["django_user_module"]
     django_root_module = env_obj["django_root_module"]
 
+    bonuscommand1 = env_obj["bonuscommand1"]
+    bonuscommand2 = env_obj["bonuscommand2"]
+
     app_spec = start_app_spec_file(appname=appname, region=region)
     app_spec = populate_app_spec_ingress(app_spec, component_name=component_name)
     app_spec = populate_app_spec_alerts(app_spec)
@@ -248,7 +261,9 @@ def build_app_spec_file(env_obj):
                                           gh_branch=gh_branch,
                                           django_user_module=django_user_module,
                                           env_list=env_list,
-                                          django_root_module=django_root_module)
+                                          django_root_module=django_root_module,
+                                          bonuscommand1=bonuscommand1,
+                                          bonuscommand2=bonuscommand2)
     return app_spec
 
 
@@ -507,7 +522,8 @@ def create_db(client, cluster=None, database_name=None):
     return result["db"]["name"]
 
 
-def get_database(client, cluster, database_name, skip_defaultdb=True):  # , database_name=None):
+def get_database(client, cluster, database_name,
+                 skip_defaultdb=True):  # , database_name=None):
     if cluster:
         chosen_db = None
         while not chosen_db:
@@ -614,7 +630,8 @@ def create_db_pool(client, cluster=None, app_name=None, project_name=None, regio
 
     result = client.databases.add_connection_pool(cluster["id"], body)
 
-    grant_db_rights_to_django_user(client=client, cluster=cluster, database=database, user=user)
+    grant_db_rights_to_django_user(client=client, cluster=cluster, database=database,
+                                   user=user)
 
     return result["pool"]["name"]
 
@@ -633,7 +650,8 @@ def get_doadmin_connection_string(database, cluster):
     return connection_string
 
 
-def grant_db_rights_to_django_user(client, app_name=None, cluster=None, user=None, database=None):
+def grant_db_rights_to_django_user(client, app_name=None, cluster=None, user=None,
+                                   database=None):
     if not cluster:
         cluster = get_cluster(client=client)
     if not user:
@@ -1009,6 +1027,8 @@ class Helper:
     _app_spec = None
     domain = None
     zone = None
+    bonuscommand1 = None
+    bonuscommand2 = None
 
     # Django info
     django_user_module = None
@@ -1169,6 +1189,16 @@ class Helper:
         self.zone = _get_env_var_from_list_or_keep_original(potential_var_names,
                                                             self.zone, override)
 
+        potential_var_names = ["bonuscommand1", "BONUSCOMMAND1", "BONUS_RUN_COMMAND_1"]
+        self.bonuscommand1 = _get_env_var_from_list_or_keep_original(potential_var_names,
+                                                                     self.bonuscommand1,
+                                                                     override)
+
+        potential_var_names = ["bonuscommand2", "BONUSCOMMAND2", "BONUS_RUN_COMMAND_2"]
+        self.bonuscommand2 = _get_env_var_from_list_or_keep_original(potential_var_names,
+                                                                     self.bonuscommand2,
+                                                                     override)
+
     def save_app_spec_to_json_file(self, filename=None):
         if not filename:
             filename = self._app_spec["name"] + ".json"
@@ -1190,7 +1220,8 @@ class Helper:
                     ("$ Create App from loaded App Spec $", "create_do_from_memory"))
                 options.append(
                     ("$ Update App from loaded App Spec $", "update_do_from_memory"))
-                options.append(("Save App Spec from memory into json file", "save_to_file"))
+                options.append(
+                    ("Save App Spec from memory into json file", "save_to_file"))
                 # options.append(("Dump App Spec from memory to screen", "dump_from_memory"))
             options.append(
                 ("Load App Spec from scratch into memory", "load_from_user_input"))
@@ -1232,7 +1263,8 @@ class Helper:
                 self.load_app_spec_from_json_file(filename=filename)
             elif pickedoption == "update_do_from_memory":
                 print("Which app would you like to update?")
-                self._target_app = get_app(client=self.do_client, app_name=self.appname_guess)
+                self._target_app = get_app(client=self.do_client,
+                                           app_name=self.appname_guess)
                 update_app_from_app_spec(client=self.do_client,
                                          target_app=self._target_app,
                                          app_spec=self._app_spec)
@@ -1253,7 +1285,8 @@ class Helper:
             elif pickedoption == "create_db":
                 create_db(client=self.do_client, database_name=self.appname_guess)
             elif pickedoption == "grant_user":
-                grant_db_rights_to_django_user(client=self.do_client, app_name=self.appname_guess)
+                grant_db_rights_to_django_user(client=self.do_client,
+                                               app_name=self.appname_guess)
             elif pickedoption == "add_app_to_db_firewall":
                 add_app_to_db_firewall(client=self.do_client,
                                        app_name=self.appname_guess)
@@ -1412,6 +1445,8 @@ class Helper:
             "django_root_module": django_root_module,
             "secret_key_env_key": self.secret_key_env_key,
             "allowed_hosts_env_key": self.allowed_hosts_env_key,
+            "bonuscommand1": self.bonuscommand1,
+            "bonuscommand2": self.bonuscommand2,
         }
         self._app_spec = build_app_spec_file(env_obj=spec_vars)
 
