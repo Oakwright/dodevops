@@ -200,10 +200,18 @@ def populate_app_spec_services(app_spec, component_name, gh_repo, gh_branch, env
                                bonuscommand2=None):
     bonus = ""
 
+    first_command = "python3 manage.py migrate"
+
+    last_command = "gunicorn --worker-tmp-dir /dev/shm {}.wsgi:application  --bind 0.0.0.0:{}".format(
+            django_root_module, port)
+
     if bonuscommand1:
         bonus = "\n" + bonuscommand1
     if bonuscommand2:
         bonus = bonus + "\n" + bonuscommand2
+
+    run_command = "{}{}\n{}".format(
+            first_command, bonus, last_command)
 
     services_json = {
         "name": component_name,
@@ -214,8 +222,7 @@ def populate_app_spec_services(app_spec, component_name, gh_repo, gh_branch, env
         },
         "build_command": "python manage.py makemigrations\npython manage.py makemigrations {}".format(
             django_user_module),
-        "run_command": "python3 manage.py migrate{}\ngunicorn --worker-tmp-dir /dev/shm {}.wsgi:application  --bind 0.0.0.0:{}".format(
-            bonus, django_root_module, port),
+        "run_command": run_command,
         "source_dir": "/",
         "environment_slug": "python",
         "envs": env_list,
