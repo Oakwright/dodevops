@@ -203,7 +203,7 @@ def populate_app_spec_services(app_spec, component_name, gh_repo, gh_branch, env
     first_command = "python3 manage.py migrate"
 
     last_command = "gunicorn --worker-tmp-dir /dev/shm {}.wsgi:application  --bind 0.0.0.0:{}".format(
-            django_root_module, port)
+        django_root_module, port)
 
     if bonuscommand1:
         bonus = "\n" + bonuscommand1
@@ -211,7 +211,7 @@ def populate_app_spec_services(app_spec, component_name, gh_repo, gh_branch, env
         bonus = bonus + "\n" + bonuscommand2
 
     run_command = "{}{}\n{}".format(
-            first_command, bonus, last_command)
+        first_command, bonus, last_command)
 
     services_json = {
         "name": component_name,
@@ -234,7 +234,54 @@ def populate_app_spec_services(app_spec, component_name, gh_repo, gh_branch, env
     return app_spec
 
 
-def build_app_spec_file(env_obj):
+def populate_app_spec_jobs(app_spec, gh_repo, gh_branch, env_list,
+                           django_user_module, deploy_on_push=True):
+    lines = []
+
+    python_lines = ("from custom_storages import MediaStorage;"
+                    "FileStorage = MediaStorage;"
+                    "fs = FileStorage();"
+                    "test = fs.open('db.json');"
+                    "temp = test.read();"
+                    "from django.core.files import File;"
+                    "f = open('db.json', 'w');"
+                    "testfile = File(f);"
+                    "testfile.write(temp.decode('utf-8'));"
+                    "testfile.close();"
+                    "f.close()")
+
+    lines.append("python manage.py makemigrations\n")
+    lines.append("python manage.py makemigrations {}\n".format(
+        django_user_module))
+    lines.append("python manage.py migrate\n")
+
+    # get json file from somewhere to here
+
+    lines.append("python manage.py shell -c \"{}\"\n".format(python_lines))
+
+    # Load json file
+    lines.append("python manage.py loaddata \"db.json\"\n")
+
+    run_command = "".join(lines)
+
+    services_json = {
+        "name": "migrate",
+        "kind": "PRE_DEPLOY",
+        "github": {
+            "repo": gh_repo,
+            "branch": gh_branch,
+            "deploy_on_push": deploy_on_push
+        },
+        "run_command": run_command,
+        "source_dir": "/",
+        "envs": env_list,
+    }
+    app_spec["jobs"] = []
+    app_spec["jobs"].append(services_json)
+    return app_spec
+
+
+def build_app_spec_file(env_obj, job_lines=None):
     env_list = build_env_list(env_obj["envvars"],
                               secret_key_env_key=env_obj["secret_key_env_key"],
                               allowed_hosts_env_key=env_obj["allowed_hosts_env_key"])
@@ -271,6 +318,14 @@ def build_app_spec_file(env_obj):
                                           django_root_module=django_root_module,
                                           bonuscommand1=bonuscommand1,
                                           bonuscommand2=bonuscommand2)
+    if job_lines:
+        app_spec = populate_app_spec_jobs(app_spec,
+                                          gh_repo=gh_repo,
+                                          gh_branch=gh_branch,
+                                          django_user_module=django_user_module,
+                                          env_list=env_list)
+        # populate_app_spec_jobs(app_spec, gh_repo, gh_branch, env_list,
+        #                            django_user_module, deploy_on_push=True)
     return app_spec
 
 
@@ -1016,6 +1071,54 @@ def create_s3_space(aws_access_key_id=None, aws_secret_access_key=None, aws_regi
         s3client.MakeBucket(space_name, aws_region)
 
 
+def upload_db_json_to_s3_space(aws_access_key_id=None, aws_secret_access_key=None,
+                               aws_region=None,
+                               appname=None):
+    session = boto3.session.Session()
+    s3client = session.client('s3',
+                              endpoint_url='https://{}.digitaloceanspaces.com'.format(
+                                  aws_region),
+                              aws_access_key_id=aws_access_key_id,
+                              aws_secret_access_key=aws_secret_access_key)
+
+    space_name = get_spaces(s3client=s3client, appname=appname)
+
+    rootfolder = get_root_folder(s3client=s3client, space=space_name,
+                                 component_name=appname)
+
+    mediafolder = get_media_folder(s3client=s3client, space=space_name,
+                                   root_folder=rootfolder)
+
+    with open("db.json", "r") as f:
+        dbdump = json.load(f)
+
+    s3client.put_object(Bucket=space_name,
+                        Key=mediafolder + '/db.json',
+                        Body=json.dumps(dbdump))
+
+
+def remove_db_json_from_s3_space(aws_access_key_id=None, aws_secret_access_key=None,
+                                 aws_region=None,
+                                 appname=None):
+    session = boto3.session.Session()
+    s3client = session.client('s3',
+                              endpoint_url='https://{}.digitaloceanspaces.com'.format(
+                                  aws_region),
+                              aws_access_key_id=aws_access_key_id,
+                              aws_secret_access_key=aws_secret_access_key)
+
+    space_name = get_spaces(s3client=s3client, appname=appname)
+
+    rootfolder = get_root_folder(s3client=s3client, space=space_name,
+                                 component_name=appname)
+
+    mediafolder = get_media_folder(s3client=s3client, space=space_name,
+                                   root_folder=rootfolder)
+
+    s3client.delete_object(Bucket=space_name,
+                           Key=mediafolder + '/db.json')
+
+
 class Helper:
     # DigitalOcean's connection info
     _DIGITALOCEAN_TOKEN = None
@@ -1247,6 +1350,10 @@ class Helper:
             #     ("-- Add local IP to DB Firewall", "add_local_ip_to_db_firewall"))
             # options.append(("-- Remove local IP from DB Firewall",
             #                 "remove_local_ip_from_db_firewall"))
+            options.append(("-- Upload db.json to Spaces", "upload_db_json_to_s3_space"))
+            options.append(
+                ("-- Remove db.json from Spaces", "remove_db_json_from_s3_space"))
+            options.append(("-- Remove Job from App", "remove_job_from_app"))
             options.append(("Exit", "exit"))
             questions = [
                 inquirer.List('whatdo',
@@ -1305,6 +1412,20 @@ class Helper:
                 create_s3_space(self._AWS_ACCESS_KEY_ID, self._AWS_SECRET_ACCESS_KEY,
                                 aws_region=self._AWS_REGION,
                                 space_name="space-" + self.appname_guess)
+            elif pickedoption == "upload_db_json_to_s3_space":
+                if not self._AWS_REGION:
+                    self._AWS_REGION = get_aws_region(client=self.do_client)
+                upload_db_json_to_s3_space(aws_access_key_id=self._AWS_ACCESS_KEY_ID,
+                                           aws_secret_access_key=self._AWS_SECRET_ACCESS_KEY,
+                                           aws_region=self._AWS_REGION,
+                                           appname=self.appname_guess)
+            elif pickedoption == "remove_db_json_from_s3_space":
+                if not self._AWS_REGION:
+                    self._AWS_REGION = get_aws_region(client=self.do_client)
+                remove_db_json_from_s3_space(aws_access_key_id=self._AWS_ACCESS_KEY_ID,
+                                             aws_secret_access_key=self._AWS_SECRET_ACCESS_KEY,
+                                             aws_region=self._AWS_REGION,
+                                             appname=self.appname_guess)
 
     def build_app_spec_from_user_input(self):
         allowed_hosts = get_allowed_hosts()
@@ -1385,6 +1506,15 @@ class Helper:
         aws_s3_endpoint_url = "https://{}.{}.digitaloceanspaces.com".format(spacename,
                                                                             aws_region)
 
+        job_lines = inquirer.confirm(
+            "Do you want to include a migration job to import db.json?", default=True)
+        if job_lines:
+            if not self._AWS_REGION:
+                self._AWS_REGION = get_aws_region(client=self.do_client)
+            upload_db_json_to_s3_space(aws_access_key_id=self._AWS_ACCESS_KEY_ID,
+                                       aws_secret_access_key=self._AWS_SECRET_ACCESS_KEY,
+                                       aws_region=aws_region, appname=appname)
+
         aws_storage_bucket_name = rootfolder
         aws_location = rootfolder
         disable_collectstatic = "1"
@@ -1455,7 +1585,7 @@ class Helper:
             "bonuscommand1": self.bonuscommand1,
             "bonuscommand2": self.bonuscommand2,
         }
-        self._app_spec = build_app_spec_file(env_obj=spec_vars)
+        self._app_spec = build_app_spec_file(env_obj=spec_vars, job_lines=job_lines)
 
 
 def start():
