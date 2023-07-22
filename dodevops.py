@@ -1,6 +1,8 @@
 import json
 import logging
 import secrets
+import time
+
 import psycopg2
 from psycopg2 import sql
 import requests
@@ -71,7 +73,7 @@ def update_app_from_app_spec(client, target_app, app_spec):
     return response
 
 
-def create_app_from_app_spec(client, potential_spec):
+def create_app_from_app_spec(client, potential_spec, wait_for_migrate=False):
     print(potential_spec)
     validate_body = {
         "spec": potential_spec
@@ -83,12 +85,15 @@ def create_app_from_app_spec(client, potential_spec):
     if not answer["continue"]:
         print("Aborting")
         return None
-    response = client.apps.create(body=validate_body)
+    client.apps.create(body=validate_body)
     if inquirer.confirm("Do you want to add the app to the db firewall?", default=True):
         add_app_to_db_firewall(client, app_name=potential_spec["name"])
     print(
         "If this is a new subdomain your browser may display SSL_ERROR_NO_CYPHER_OVERLAP error until the domain is verified ~5 minutes")
-    return response
+    if wait_for_migrate:
+        print("Preparing to wait for app to migrate")
+        return loop_until_migrate(client, potential_spec["name"])
+    return False
 
 
 def build_env_list(env_obj, secret_key_env_key="SECRET_KEY",
@@ -1119,6 +1124,91 @@ def remove_db_json_from_s3_space(aws_access_key_id=None, aws_secret_access_key=N
                            Key=mediafolder + '/db.json')
 
 
+def upload_media_to_s3_space(aws_access_key_id, aws_secret_access_key, aws_region,
+                             appname):
+    session = boto3.session.Session()
+    s3client = session.client('s3',
+                              endpoint_url='https://{}.digitaloceanspaces.com'.format(
+                                  aws_region),
+                              aws_access_key_id=aws_access_key_id,
+                              aws_secret_access_key=aws_secret_access_key)
+    spacename = get_spaces(s3client=s3client, appname=appname)
+    rootfolder = get_root_folder(s3client=s3client, space=spacename,
+                                 component_name=appname)
+    mediafolder = get_media_folder(s3client=s3client, space=spacename,
+                                   root_folder=rootfolder)
+
+    local_media_folder = os.path.join(os.getcwd(), "media")
+
+    if os.path.exists(local_media_folder):
+        for root, dirs, files in os.walk(local_media_folder):
+            for file in files:
+                local_path = os.path.join(root, file)
+                relative_path = os.path.relpath(local_path, local_media_folder)
+                s3_path = os.path.join(mediafolder, relative_path)
+                print("Uploading {} to {}".format(local_path, s3_path))
+                s3client.upload_file(local_path, spacename, s3_path)
+
+
+def list_deployments(client, app_name=None):
+    app_name = get_app(client, app_name)
+    get_resp = client.apps.list_deployments(app_id=app_name["id"])
+    print(get_resp)
+
+
+def loop_until_migrate(client, app_name=None):
+    app_name = get_app(client, app_name)
+    finished = False
+    error = False
+    while not finished:
+        print("Checking if migrate has finished")
+        get_resp = client.apps.list_deployments(app_id=app_name["id"])
+
+        migrate_deployments = []
+        if "deployments" in get_resp:
+            for deployment in get_resp["deployments"]:
+                if "jobs" in deployment:
+                    for job in deployment["jobs"]:
+                        if "name" in job and job["name"] == "migrate":
+                            migrate_deployments.append(deployment)
+
+        if len(migrate_deployments) > 0:
+            for deployment in migrate_deployments:
+                if "phase" in deployment:
+                    print(deployment["phase"])
+                    if deployment["phase"] == "ERROR":
+                        print("Migrate appears to have errored")
+                        error = True
+                if "progress" in deployment and "steps" in deployment["progress"]:
+                    for step in deployment["progress"]["steps"]:
+                        if "name" in step and step["name"] == "deploy" and "status" in step and step["status"] == "SUCCESS" and "steps" in step:
+                            for innerstep in step["steps"]:
+                                if "name" in innerstep and innerstep["name"] == "finalize" and innerstep["status"] == "SUCCESS":
+                                    finished = True
+                                    print("Migrate appears to have finished")
+                                    return finished
+        if error:
+            return finished
+        print("Migrate has not finished, waiting 10 seconds")
+        time.sleep(10)
+
+
+def remove_job_from_app(client, app_name, job_name="migrate"):
+    app = get_app(client, app_name)
+    if app and app["spec"]:
+        app_spec = app["spec"]
+        # remove job from app spec
+        if "jobs" in app_spec:
+            jobs = app_spec["jobs"]
+            new_jobs = []
+            for job in jobs:
+                if "name" in job and job["name"] == job_name:
+                    continue
+                new_jobs.append(job)
+            app_spec["jobs"] = new_jobs
+            update_app_from_app_spec(client, app, app_spec)
+
+
 class Helper:
     # DigitalOcean's connection info
     _DIGITALOCEAN_TOKEN = None
@@ -1139,6 +1229,7 @@ class Helper:
     zone = None
     bonuscommand1 = None
     bonuscommand2 = None
+    _wait_for_migrate = False
 
     # Django info
     django_user_module = None
@@ -1353,7 +1444,13 @@ class Helper:
             options.append(("-- Upload db.json to Spaces", "upload_db_json_to_s3_space"))
             options.append(
                 ("-- Remove db.json from Spaces", "remove_db_json_from_s3_space"))
-            options.append(("-- Remove Job from App", "remove_job_from_app"))
+            options.append(
+                ("-- Remove Job from App not implemented", "remove_job_from_app"))
+            options.append(("-- Upload local media folder to s3 space", "upload_media"))
+            options.append(("-- List App Deployments for app", "list_deployments"))
+            options.append((
+                "-- Loop until migrate finishes then delete db.json from s3 space",
+                "loop_until_migrate"))
             options.append(("Exit", "exit"))
             questions = [
                 inquirer.List('whatdo',
@@ -1383,8 +1480,27 @@ class Helper:
                                          target_app=self._target_app,
                                          app_spec=self._app_spec)
             elif pickedoption == "create_do_from_memory":
-                create_app_from_app_spec(client=self.do_client,
-                                         potential_spec=self._app_spec)
+                migrate_finished_too = create_app_from_app_spec(client=self.do_client, potential_spec=self._app_spec, wait_for_migrate=self._wait_for_migrate)
+                if self._wait_for_migrate and migrate_finished_too:
+                    if inquirer.confirm("Migration appears to have succeeded, do you want to remove the migration job from the app?", default=True):
+                        remove_job_from_app(client=self.do_client, app_name=self.appname_guess, job_name="migrate")
+                        if inquirer.confirm("Now do you want to delete db.json from s3 space?", default=True):
+                            if not self._AWS_REGION:
+                                self._AWS_REGION = get_aws_region(client=self.do_client)
+                            remove_db_json_from_s3_space(aws_access_key_id=self._AWS_ACCESS_KEY_ID,
+                                                         aws_secret_access_key=self._AWS_SECRET_ACCESS_KEY,
+                                                         aws_region=self._AWS_REGION,
+                                                         appname=self.appname_guess)
+
+                if inquirer.confirm(
+                        "Do you want to upload local media folder to DO spaces?",
+                        default=True):
+                    if not self._AWS_REGION:
+                        self._AWS_REGION = get_aws_region(client=self.do_client)
+                    upload_media_to_s3_space(aws_access_key_id=self._AWS_ACCESS_KEY_ID,
+                                             aws_secret_access_key=self._AWS_SECRET_ACCESS_KEY,
+                                             aws_region=self._AWS_REGION,
+                                             appname=self.appname_guess)
             elif pickedoption == "load_from_user_input":
                 self.build_app_spec_from_user_input()
             elif pickedoption == "create_db_cluster":
@@ -1426,6 +1542,26 @@ class Helper:
                                              aws_secret_access_key=self._AWS_SECRET_ACCESS_KEY,
                                              aws_region=self._AWS_REGION,
                                              appname=self.appname_guess)
+            elif pickedoption == "remove_job_from_app":
+                remove_job_from_app(client=self.do_client, app_name=self.appname_guess, job_name="migrate")
+            elif pickedoption == "upload_media":
+                if not self._AWS_REGION:
+                    self._AWS_REGION = get_aws_region(client=self.do_client)
+                upload_media_to_s3_space(aws_access_key_id=self._AWS_ACCESS_KEY_ID,
+                                         aws_secret_access_key=self._AWS_SECRET_ACCESS_KEY,
+                                         aws_region=self._AWS_REGION,
+                                         appname=self.appname_guess)
+            elif pickedoption == "list_deployments":
+                list_deployments(client=self.do_client, app_name=self.appname_guess)
+            elif pickedoption == "loop_until_migrate":
+                if loop_until_migrate(client=self.do_client, app_name=self.appname_guess):
+                    if not self._AWS_REGION:
+                        self._AWS_REGION = get_aws_region(client=self.do_client)
+                    remove_db_json_from_s3_space(
+                        aws_access_key_id=self._AWS_ACCESS_KEY_ID,
+                        aws_secret_access_key=self._AWS_SECRET_ACCESS_KEY,
+                        aws_region=self._AWS_REGION,
+                        appname=self.appname_guess)
 
     def build_app_spec_from_user_input(self):
         allowed_hosts = get_allowed_hosts()
@@ -1514,6 +1650,7 @@ class Helper:
             upload_db_json_to_s3_space(aws_access_key_id=self._AWS_ACCESS_KEY_ID,
                                        aws_secret_access_key=self._AWS_SECRET_ACCESS_KEY,
                                        aws_region=aws_region, appname=appname)
+            self._wait_for_migrate = True
 
         aws_storage_bucket_name = rootfolder
         aws_location = rootfolder
