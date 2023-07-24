@@ -586,11 +586,13 @@ def get_cluster(client, cluster_name="db-postgresql", region=None, prefix=None):
                     if status in ['creating', 'resuming', 'updating']:
                         print(f"Cluster status: {status}. Waiting...")
                         time.sleep(10)
-                    elif status == 'active':
+                    elif status in ['active', 'online']:
                         print("Cluster has been created successfully!")
+                        chosen_cluster = None
                         break
                     else:
                         print(f"Cluster creation failed. Status: {status}")
+                        chosen_cluster = None
                         break
             else:
                 chosen_cluster = None
@@ -1202,8 +1204,7 @@ def list_deployments(client, app_name=None):
 
 
 def loop_until_migrate(client, app_name=None):
-    if not app_name:
-        app_name = get_app(client, app_name)
+    app_name = get_app(client, app_name)
     finished = False
     error = False
     while not finished:
