@@ -36,7 +36,7 @@ def _get_env_var_from_list_or_keep_original(env_var_list, original_value=None,
         if os.getenv(env_var):
             logger.debug("Found {} in .env".format(env_var))
             return os.getenv(env_var)
-    logger.debug("No env var from list found in .env")
+    # logger.debug("No env var from list found in .env")
     return original_value
 
 
@@ -370,7 +370,7 @@ def get_app(client, app_name="app"):
 
 
 def get_allowed_hosts():
-    logger.debug("domain name is accessible from a DO variable in app platform")
+    # logger.debug("domain name is accessible from a DO variable in app platform")
     return "${APP_DOMAIN}"
 
 
@@ -400,7 +400,7 @@ def get_app_name(appname):
     return appname
 
 
-def get_aws_region(client, region_slug=None):
+def get_region(client, region_slug=None):
     if region_slug is None:
         region_slug = "ams3"
     print("Getting regions")
@@ -434,22 +434,32 @@ def get_spaces(s3client, appname):
     while not pickedoption:
         space_resp = s3client.list_buckets()
         spacecount = len(space_resp['Buckets'])
-        if spacecount > 0:
-            options = []
-            for s in space_resp['Buckets']:
-                options.append(s['Name'])
-            options.append(("$$ Create New Space $$", None))
-            questions = [
-                inquirer.List('space',
-                              message="Which space?",
-                              choices=options,
-                              default=appname,
-                              ),
-            ]
-            answers = inquirer.prompt(questions)
-            pickedoption = answers['space']
-            if not pickedoption:
-                create_s3_space(s3client=s3client, space_name="space-" + appname)
+        print(spacecount)
+        # if spacecount > 0:
+        options = []
+        for s in space_resp['Buckets']:
+            options.append(s['Name'])
+        options.append(("$$ Create New Space $$", "creates3"))
+        questions = [
+            inquirer.List('space',
+                          message="Which space?",
+                          choices=options,
+                          default=appname,
+                          ),
+        ]
+        answers = inquirer.prompt(questions)
+        pickedoption = answers['space']
+        if pickedoption == "creates3":
+            space_name = create_s3_space(s3client=s3client,
+                                         space_name="space-" + appname)
+            if space_name:
+                pickedoption = space_name
+                while not check_space_existence(s3client, space_name):
+                    print("Waiting for space creation to complete...")
+                    time.sleep(10)
+            else:
+                pickedoption = None
+        if pickedoption:
             logger.debug("Using space {}".format(pickedoption))
     return pickedoption
 
@@ -468,7 +478,7 @@ def get_root_folder(s3client, space, component_name=None):
     while not return_folder:
         space_resp = s3client.list_objects(Bucket=space, Delimiter='/')
 
-        if len(space_resp['CommonPrefixes']) > 0:
+        if "CommonPrefixes" in space_resp and len(space_resp['CommonPrefixes']) > 0:
             options = []
             for s in space_resp['CommonPrefixes']:
                 options.append(s['Prefix'][0:-1])
@@ -552,7 +562,7 @@ def get_cluster(client, cluster_name="db-postgresql", region=None, prefix=None):
                         "Cluster {} contains {}".format(default_db_cluster['name'],
                                                         cluster_name))
 
-            options.append(("$$ Create new cluster", None))
+            options.append(("$$ Create new cluster $$", "createcluster"))
             questions = [
                 inquirer.List('cluster',
                               message="Which cluster?",
@@ -565,15 +575,26 @@ def get_cluster(client, cluster_name="db-postgresql", region=None, prefix=None):
         else:
             print("No clusters found")
             chosen_cluster = None
-        if not chosen_cluster:
-            create_db_cluster(client, region=region, suffix=prefix)
-            # print(
-            #     "No cluster found, please create a postgres one here: https://cloud.digitalocean.com/databases/new")
-            # answer = inquirer.prompt([inquirer.Confirm('retry',
-            #                                            message="Do you want to retry?")])
-            # if not answer["retry"]:
-            #     print("Aborting")
-            #     return None
+        if not chosen_cluster or chosen_cluster == "createcluster":
+            cluster_id = create_db_cluster(client, region=region, suffix=prefix)
+            if cluster_id:
+                logger.debug("Waiting for cluster to come online")
+                print("This part can take about five minutes, it would be a good time to get coffee")
+                while True:
+                    status = check_cluster_status(cluster_id, client)
+
+                    if status in ['creating', 'resuming', 'updating']:
+                        print(f"Cluster status: {status}. Waiting...")
+                        time.sleep(10)
+                    elif status == 'active':
+                        print("Cluster has been created successfully!")
+                        break
+                    else:
+                        print(f"Cluster creation failed. Status: {status}")
+                        break
+            else:
+                chosen_cluster = None
+
     return chosen_cluster
 
 
@@ -590,7 +611,8 @@ def create_db(client, cluster=None, database_name=None):
 
 
 def get_database(client, cluster, database_name,
-                 skip_defaultdb=True):  # , database_name=None):
+                 skip_defaultdb=True):
+    logger.debug("Getting database")
     if cluster:
         chosen_db = None
         while not chosen_db:
@@ -627,6 +649,7 @@ def get_database(client, cluster, database_name,
 
 
 def create_db_user(client, cluster=None, user_name=None, app_name=None):
+    logger.debug("Creating db user")
     if not cluster:
         cluster = get_cluster(client=client)
 
@@ -647,6 +670,7 @@ def create_db_user(client, cluster=None, user_name=None, app_name=None):
 
 
 def get_db_user(client, cluster=None, ignore_admin=True, app_name=None):
+    logger.debug("Getting db user")
     user_name = None
     if not user_name and app_name:
         user_name = app_name + "-user"
@@ -700,12 +724,10 @@ def create_db_pool(client, cluster=None, app_name=None, project_name=None, regio
     grant_db_rights_to_django_user(client=client, cluster=cluster, database=database,
                                    user=user)
 
-    return result["pool"]["name"]
+    return result["pool"]
 
 
 def get_doadmin_connection_string(database, cluster):
-    # "postgresql://doadmin:AVNS_7b4RI71UbZoNsF9TR42@db-postgresql-ams3-possumnet-do-user-11185503-0.b.db.ondigitalocean.com:25060/crawlydb?sslmode=require"
-    # 'postgresql://doadmin:AVNS_7b4RI71UbZoNsF9TR42@db-postgresql-ams3-possumnet-do-user-11185503-0.b.db.ondigitalocean.com:25060/defaultdb?sslmode=require'
     connection_string = "postgresql://{}:{}@{}:{}/{}?sslmode=require"
     connection_string = connection_string.format(
         cluster["connection"]["user"],
@@ -719,6 +741,7 @@ def get_doadmin_connection_string(database, cluster):
 
 def grant_db_rights_to_django_user(client, app_name=None, cluster=None, user=None,
                                    database=None):
+    logger.debug("Granting db rights to django user")
     if not cluster:
         cluster = get_cluster(client=client)
     if not user:
@@ -773,13 +796,12 @@ def grant_db_rights_to_django_user(client, app_name=None, cluster=None, user=Non
 
 
 def get_pool(client, cluster, pool_name="pool", app_name=None, project_name=None):
-    print(pool_name)
+    logger.debug("Getting pool")
     chosen_pool = None
     while not chosen_pool:
         pool_default = None
         pool_resp = client.databases.list_connection_pools(cluster["id"])
-        poolcount = len(pool_resp["pools"])
-        if poolcount > 0:
+        if "pools" in pool_resp and len(pool_resp["pools"]) > 0:
             pooloptions = []
             for p in pool_resp["pools"]:
                 pooloptions.append((p["name"], p))
@@ -805,7 +827,7 @@ def get_pool(client, cluster, pool_name="pool", app_name=None, project_name=None
             print("No connection pools found")
             chosen_pool = None
         if not chosen_pool:
-            create_db_pool(client, cluster, app_name=app_name, project_name=project_name)
+            chosen_pool = create_db_pool(client, cluster, app_name=app_name, project_name=project_name)
             # print(
             #     "No pool found, please create a pool here: https://cloud.digitalocean.com/databases/")
             # answer = inquirer.prompt([inquirer.Confirm('retry',
@@ -962,9 +984,16 @@ def get_aws_secret_access_key():
         return promptentry
 
 
+def check_cluster_status(cluster_id, client):
+    # Get the current status of the cluster
+    cluster = client.databases.get_cluster(cluster_id)
+    print(cluster)
+    return cluster['database']['status']
+
+
 def create_db_cluster(client, cluster_name=None, region=None, suffix=None):
     if not region:
-        region = get_aws_region(client)
+        region = get_region(client)
     if not cluster_name and suffix:
         cluster_name = "db-postgresql-" + region + "-" + suffix
     else:
@@ -989,8 +1018,12 @@ def create_db_cluster(client, cluster_name=None, region=None, suffix=None):
         "Warning! Continuing will incur a cost on your DigitalOcean account, continue?",
         default=False)
     if confirm:
-        print('Creating database cluster')
-        client.create_db_cluster(body=body)
+        logger.debug("Creating database cluster")
+        cluster = client.databases.create_cluster(body=body)
+        cluster_id = cluster['database']['id']
+        return cluster_id
+    else:
+        return None
 
 
 def add_app_to_db_firewall(client, app_name=None):
@@ -1073,12 +1106,19 @@ def create_s3_space(aws_access_key_id=None, aws_secret_access_key=None, aws_regi
                                default=space_name)
     if inquirer.confirm(
             "Creating a new space will cost additional money, do you want to continue?"):
-        s3client.MakeBucket(space_name, aws_region)
+        logger.debug("Creating space {}".format(space_name))
+        s3client.create_bucket(Bucket=space_name)
+
+        return space_name
+    else:
+        return None
 
 
 def upload_db_json_to_s3_space(aws_access_key_id=None, aws_secret_access_key=None,
                                aws_region=None,
-                               appname=None):
+                               appname=None, space_name=None, rootfolder=None,
+                               mediafolder=None):
+    logger.debug("Uploading db.json to space {}".format(space_name))
     session = boto3.session.Session()
     s3client = session.client('s3',
                               endpoint_url='https://{}.digitaloceanspaces.com'.format(
@@ -1086,13 +1126,16 @@ def upload_db_json_to_s3_space(aws_access_key_id=None, aws_secret_access_key=Non
                               aws_access_key_id=aws_access_key_id,
                               aws_secret_access_key=aws_secret_access_key)
 
-    space_name = get_spaces(s3client=s3client, appname=appname)
+    if not space_name:
+        space_name = get_spaces(s3client=s3client, appname=appname)
 
-    rootfolder = get_root_folder(s3client=s3client, space=space_name,
-                                 component_name=appname)
+    if not rootfolder:
+        rootfolder = get_root_folder(s3client=s3client, space=space_name,
+                                     component_name=appname)
 
-    mediafolder = get_media_folder(s3client=s3client, space=space_name,
-                                   root_folder=rootfolder)
+    if not mediafolder:
+        mediafolder = get_media_folder(s3client=s3client, space=space_name,
+                                       root_folder=rootfolder)
 
     with open("db.json", "r") as f:
         dbdump = json.load(f)
@@ -1100,6 +1143,8 @@ def upload_db_json_to_s3_space(aws_access_key_id=None, aws_secret_access_key=Non
     s3client.put_object(Bucket=space_name,
                         Key=mediafolder + '/db.json',
                         Body=json.dumps(dbdump))
+
+    logger.debug("Uploaded db.json to space {}".format(space_name))
 
 
 def remove_db_json_from_s3_space(aws_access_key_id=None, aws_secret_access_key=None,
@@ -1157,7 +1202,8 @@ def list_deployments(client, app_name=None):
 
 
 def loop_until_migrate(client, app_name=None):
-    app_name = get_app(client, app_name)
+    if not app_name:
+        app_name = get_app(client, app_name)
     finished = False
     error = False
     while not finished:
@@ -1207,6 +1253,17 @@ def remove_job_from_app(client, app_name, job_name="migrate"):
                 new_jobs.append(job)
             app_spec["jobs"] = new_jobs
             update_app_from_app_spec(client, app, app_spec)
+
+
+def check_space_existence(client, space_name):
+    logger.debug("Checking if space {} exists".format(space_name))
+    try:
+        client.head_bucket(Bucket=space_name)
+        logger.debug("Space {} exists".format(space_name))
+        return True
+    except client.exceptions.NoSuchBucket:
+        logger.debug("Space {} does not exist yet".format(space_name))
+        return False
 
 
 class Helper:
@@ -1410,48 +1467,14 @@ class Helper:
         with open("appspecs/" + filename, "r") as f:
             self._app_spec = json.load(f)
 
-    def submenu_manage_apps(self):
+    def main_menu(self):
         while True:
-            options = []
-            if self._app_spec:
-                logger.debug("App spec found in memory")
+            options = [
+                ("$$$ Create Full Stack Django App $$$", "create_full_stack_django_app"),
+                (" - Submenu Manage Apps", "submenu_manage_apps"),
+                (" - Submenu Manage Spaces", "submenu_manage_spaces"),
+                (" - Submenu Manage Databases", "submenu_manage_db"), ("Exit", "exit")]
 
-                # options.append(("Edit App Spec in memory", "edit"))
-                options.append(
-                    ("$ Create App from loaded App Spec $", "create_do_from_memory"))
-                options.append(
-                    ("$ Update App from loaded App Spec $", "update_do_from_memory"))
-                options.append(
-                    ("Save App Spec from memory into json file", "save_to_file"))
-                # options.append(("Dump App Spec from memory to screen", "dump_from_memory"))
-            options.append(
-                ("Load App Spec from scratch into memory", "load_from_user_input"))
-            options.append(
-                ("Load App Spec from existing app into memory", "load_from_existing_app"))
-            options.append(("Load App Spec from json file into memory", "load_from_file"))
-
-            # options.append(("$$ Create Database Cluster", "create_db_cluster"))
-            # options.append(("$$ Create S3 Space", "create_s3_space"))
-            # options.append(("-- Create Database Connection Pool", "create_db_pool"))
-            # options.append(("-- Create Database User", "create_db_user"))
-            # options.append(("-- Create Database", "create_db"))
-            # options.append(("-- Grant DB permissions to DB user", "grant_user"))
-            # options.append(("-- Add App to DB Firewall", "add_app_to_db_firewall"))
-            # options.append(
-            #     ("-- Add local IP to DB Firewall", "add_local_ip_to_db_firewall"))
-            # options.append(("-- Remove local IP from DB Firewall",
-            #                 "remove_local_ip_from_db_firewall"))
-            options.append(("-- Upload db.json to Spaces", "upload_db_json_to_s3_space"))
-            options.append(
-                ("-- Remove db.json from Spaces", "remove_db_json_from_s3_space"))
-            options.append(
-                ("-- Remove Job from App not implemented", "remove_job_from_app"))
-            options.append(("-- Upload local media folder to s3 space", "upload_media"))
-            options.append(("-- List App Deployments for app", "list_deployments"))
-            options.append((
-                "-- Loop until migrate finishes then delete db.json from s3 space",
-                "loop_until_migrate"))
-            options.append(("Exit", "exit"))
             questions = [
                 inquirer.List('whatdo',
                               message="What would you like to do?",
@@ -1460,7 +1483,164 @@ class Helper:
             ]
             answers = inquirer.prompt(questions)
             pickedoption = answers["whatdo"]
+
             if pickedoption == "exit":
+                break
+            elif pickedoption == "create_full_stack_django_app":
+                logger.debug("User chose to create a full stack django app")
+                self.create_full_stack_django_app()
+            elif pickedoption == "submenu_manage_apps":
+                self.submenu_manage_apps()
+            elif pickedoption == "submenu_manage_spaces":
+                self.submenu_manage_spaces()
+            elif pickedoption == "submenu_manage_db":
+                self.submenu_manage_db()
+
+    def submenu_manage_spaces(self):
+        while True:
+            options = [("$$ Create S3 Space $$", "create_s3_space"),
+                       ("-- Upload db.json to Spaces", "upload_db_json_to_s3_space"),
+                       ("-- Remove db.json from Spaces", "remove_db_json_from_s3_space"),
+                       ("-- Upload local media folder to s3 space", "upload_media"),
+                       ("Go Back", "goback")]
+            questions = [
+                inquirer.List('whatdo',
+                              message="What would you like to do?",
+                              choices=options, default="update",
+                              ),
+            ]
+            answers = inquirer.prompt(questions)
+            pickedoption = answers["whatdo"]
+
+            if pickedoption == "create_s3_space":
+                if not self._AWS_REGION:
+                    self._AWS_REGION = get_region(client=self.do_client)
+                space_name = create_s3_space(self._AWS_ACCESS_KEY_ID,
+                                             self._AWS_SECRET_ACCESS_KEY,
+                                             aws_region=self._AWS_REGION,
+                                             space_name="space-" + self.appname_guess)
+                session = boto3.session.Session()
+                s3client = session.client('s3',
+                                          endpoint_url='https://{}.digitaloceanspaces.com'.format(
+                                              self._AWS_REGION),
+                                          aws_access_key_id=self._AWS_ACCESS_KEY_ID,
+                                          aws_secret_access_key=self._AWS_SECRET_ACCESS_KEY)
+                while not check_space_existence(s3client, space_name):
+                    print("Waiting for space creation to complete...")
+                    time.sleep(5)
+            elif pickedoption == "upload_db_json_to_s3_space":
+                if not self._AWS_REGION:
+                    self._AWS_REGION = get_region(client=self.do_client)
+                upload_db_json_to_s3_space(aws_access_key_id=self._AWS_ACCESS_KEY_ID,
+                                           aws_secret_access_key=self._AWS_SECRET_ACCESS_KEY,
+                                           aws_region=self._AWS_REGION,
+                                           appname=self.appname_guess)
+            elif pickedoption == "remove_db_json_from_s3_space":
+                if not self._AWS_REGION:
+                    self._AWS_REGION = get_region(client=self.do_client)
+                remove_db_json_from_s3_space(aws_access_key_id=self._AWS_ACCESS_KEY_ID,
+                                             aws_secret_access_key=self._AWS_SECRET_ACCESS_KEY,
+                                             aws_region=self._AWS_REGION,
+                                             appname=self.appname_guess)
+            elif pickedoption == "upload_media":
+                if not self._AWS_REGION:
+                    self._AWS_REGION = get_region(client=self.do_client)
+                upload_media_to_s3_space(aws_access_key_id=self._AWS_ACCESS_KEY_ID,
+                                         aws_secret_access_key=self._AWS_SECRET_ACCESS_KEY,
+                                         aws_region=self._AWS_REGION,
+                                         appname=self.appname_guess)
+            elif pickedoption == "goback":
+                break
+
+    def submenu_manage_db(self):
+        while True:
+            options = [("$$ Create Database Cluster $$", "create_db_cluster"),
+                       ("-- Create Database Connection Pool", "create_db_pool"),
+                       ("-- Create Database User", "create_db_user"),
+                       ("-- Create Database", "create_db"),
+                       ("-- Grant DB permissions to DB user", "grant_user"),
+                       ("-- Add App to DB Firewall", "add_app_to_db_firewall"),
+                       ("-- Add local IP to DB Firewall", "add_local_ip_to_db_firewall"),
+                       ("-- Remove local IP from DB Firewall",
+                        "remove_local_ip_from_db_firewall"), ("Go Back", "goback")]
+            questions = [
+                inquirer.List('whatdo',
+                              message="What would you like to do?",
+                              choices=options, default="update",
+                              ),
+            ]
+            answers = inquirer.prompt(questions)
+            pickedoption = answers["whatdo"]
+            if pickedoption == "create_db_cluster":
+                cluster_id = create_db_cluster(client=self.do_client,
+                                               region=self._AWS_REGION,
+                                               suffix=self.app_prefix)
+                while True:
+                    temp_client = self.do_client
+                    status = check_cluster_status(cluster_id, client=temp_client)
+
+                    if status in ['creating', 'resuming', 'updating']:
+                        print(f"Cluster status: {status}. Waiting...")
+                        time.sleep(10)
+                    elif status == 'active':
+                        print("Cluster has been created successfully!")
+                        break
+                    else:
+                        print(f"Cluster creation failed. Status: {status}")
+                        break
+            if pickedoption == "create_db_pool":
+                create_db_pool(client=self.do_client, region=self._AWS_REGION,
+                               app_name=self.appname_guess,
+                               project_name=self.component_name)
+            elif pickedoption == "create_db_user":
+                create_db_user(client=self.do_client, app_name=self.appname_guess)
+            elif pickedoption == "create_db":
+                create_db(client=self.do_client, database_name=self.appname_guess)
+            elif pickedoption == "grant_user":
+                grant_db_rights_to_django_user(client=self.do_client,
+                                               app_name=self.appname_guess)
+            elif pickedoption == "add_app_to_db_firewall":
+                add_app_to_db_firewall(client=self.do_client)
+            elif pickedoption == "add_local_ip_to_db_firewall":
+                add_local_ip_to_db_firewall(client=self.do_client)
+            elif pickedoption == "remove_local_ip_from_db_firewall":
+                remove_local_ip_from_db_firewall(client=self.do_client)
+            elif pickedoption == "goback":
+                break
+
+    def submenu_manage_apps(self):
+        while True:
+            options = []
+            if self._app_spec:
+                logger.debug("App spec found in memory")
+
+                options.append(
+                    ("-- $ Create App from loaded App Spec $", "create_do_from_memory"))
+                options.append(
+                    ("-- $ Update App from loaded App Spec $", "update_do_from_memory"))
+                options.append(
+                    ("-- Save App Spec from memory into json file", "save_to_file"))
+            options.append(
+                ("-- Load App Spec from scratch into memory", "load_from_user_input"))
+            options.append(
+                ("-- Load App Spec from existing app into memory",
+                 "load_from_existing_app"))
+            options.append(
+                ("-- Load App Spec from json file into memory", "load_from_file"))
+
+            options.append(
+                ("-- Remove Job from App", "remove_job_from_app"))
+            options.append(("-- List App Deployments for app", "list_deployments"))
+            options.append(("Go Back", "goback"))
+            questions = [
+                inquirer.List('whatdo',
+                              message="What would you like to do?",
+                              choices=options, default="update",
+                              ),
+            ]
+            answers = inquirer.prompt(questions)
+            pickedoption = answers["whatdo"]
+            if pickedoption == "goback":
                 break
             elif pickedoption == "load_from_existing_app":
                 self.set_app_spec_from_app(get_app(client=self.do_client))
@@ -1480,88 +1660,44 @@ class Helper:
                                          target_app=self._target_app,
                                          app_spec=self._app_spec)
             elif pickedoption == "create_do_from_memory":
-                migrate_finished_too = create_app_from_app_spec(client=self.do_client, potential_spec=self._app_spec, wait_for_migrate=self._wait_for_migrate)
+                migrate_finished_too = create_app_from_app_spec(client=self.do_client,
+                                                                potential_spec=self._app_spec,
+                                                                wait_for_migrate=self._wait_for_migrate)
                 if self._wait_for_migrate and migrate_finished_too:
-                    if inquirer.confirm("Migration appears to have succeeded, do you want to remove the migration job from the app?", default=True):
-                        remove_job_from_app(client=self.do_client, app_name=self.appname_guess, job_name="migrate")
-                        if inquirer.confirm("Now do you want to delete db.json from s3 space?", default=True):
+                    if inquirer.confirm(
+                            "Migration appears to have succeeded, do you want to remove the migration job from the app?",
+                            default=True):
+                        remove_job_from_app(client=self.do_client,
+                                            app_name=self.appname_guess,
+                                            job_name="migrate")
+                        if inquirer.confirm(
+                                "Now do you want to delete db.json from s3 space?",
+                                default=True):
                             if not self._AWS_REGION:
-                                self._AWS_REGION = get_aws_region(client=self.do_client)
-                            remove_db_json_from_s3_space(aws_access_key_id=self._AWS_ACCESS_KEY_ID,
-                                                         aws_secret_access_key=self._AWS_SECRET_ACCESS_KEY,
-                                                         aws_region=self._AWS_REGION,
-                                                         appname=self.appname_guess)
+                                self._AWS_REGION = get_region(client=self.do_client)
+                            remove_db_json_from_s3_space(
+                                aws_access_key_id=self._AWS_ACCESS_KEY_ID,
+                                aws_secret_access_key=self._AWS_SECRET_ACCESS_KEY,
+                                aws_region=self._AWS_REGION,
+                                appname=self.appname_guess)
 
                 if inquirer.confirm(
                         "Do you want to upload local media folder to DO spaces?",
                         default=True):
                     if not self._AWS_REGION:
-                        self._AWS_REGION = get_aws_region(client=self.do_client)
+                        self._AWS_REGION = get_region(client=self.do_client)
                     upload_media_to_s3_space(aws_access_key_id=self._AWS_ACCESS_KEY_ID,
                                              aws_secret_access_key=self._AWS_SECRET_ACCESS_KEY,
                                              aws_region=self._AWS_REGION,
                                              appname=self.appname_guess)
             elif pickedoption == "load_from_user_input":
                 self.build_app_spec_from_user_input()
-            elif pickedoption == "create_db_cluster":
-                create_db_cluster(client=self.do_client, region=self._AWS_REGION,
-                                  suffix=self.app_prefix)
-            elif pickedoption == "create_db_pool":
-                create_db_pool(client=self.do_client, region=self._AWS_REGION,
-                               app_name=self.appname_guess,
-                               project_name=self.component_name)
-            elif pickedoption == "create_db_user":
-                create_db_user(client=self.do_client, app_name=self.appname_guess)
-            elif pickedoption == "create_db":
-                create_db(client=self.do_client, database_name=self.appname_guess)
-            elif pickedoption == "grant_user":
-                grant_db_rights_to_django_user(client=self.do_client,
-                                               app_name=self.appname_guess)
-            elif pickedoption == "add_app_to_db_firewall":
-                add_app_to_db_firewall(client=self.do_client,
-                                       app_name=self.appname_guess)
-            elif pickedoption == "add_local_ip_to_db_firewall":
-                add_local_ip_to_db_firewall(client=self.do_client)
-            elif pickedoption == "remove_local_ip_from_db_firewall":
-                remove_local_ip_from_db_firewall(client=self.do_client)
-            elif pickedoption == "create_s3_space":
-                create_s3_space(self._AWS_ACCESS_KEY_ID, self._AWS_SECRET_ACCESS_KEY,
-                                aws_region=self._AWS_REGION,
-                                space_name="space-" + self.appname_guess)
-            elif pickedoption == "upload_db_json_to_s3_space":
-                if not self._AWS_REGION:
-                    self._AWS_REGION = get_aws_region(client=self.do_client)
-                upload_db_json_to_s3_space(aws_access_key_id=self._AWS_ACCESS_KEY_ID,
-                                           aws_secret_access_key=self._AWS_SECRET_ACCESS_KEY,
-                                           aws_region=self._AWS_REGION,
-                                           appname=self.appname_guess)
-            elif pickedoption == "remove_db_json_from_s3_space":
-                if not self._AWS_REGION:
-                    self._AWS_REGION = get_aws_region(client=self.do_client)
-                remove_db_json_from_s3_space(aws_access_key_id=self._AWS_ACCESS_KEY_ID,
-                                             aws_secret_access_key=self._AWS_SECRET_ACCESS_KEY,
-                                             aws_region=self._AWS_REGION,
-                                             appname=self.appname_guess)
+
             elif pickedoption == "remove_job_from_app":
-                remove_job_from_app(client=self.do_client, app_name=self.appname_guess, job_name="migrate")
-            elif pickedoption == "upload_media":
-                if not self._AWS_REGION:
-                    self._AWS_REGION = get_aws_region(client=self.do_client)
-                upload_media_to_s3_space(aws_access_key_id=self._AWS_ACCESS_KEY_ID,
-                                         aws_secret_access_key=self._AWS_SECRET_ACCESS_KEY,
-                                         aws_region=self._AWS_REGION,
-                                         appname=self.appname_guess)
+                remove_job_from_app(client=self.do_client, app_name=self.appname_guess,
+                                    job_name="migrate")
             elif pickedoption == "list_deployments":
                 list_deployments(client=self.do_client, app_name=self.appname_guess)
-            elif pickedoption == "loop_until_migrate":
-                if loop_until_migrate(client=self.do_client, app_name=self.appname_guess):
-                    if not self._AWS_REGION:
-                        self._AWS_REGION = get_aws_region(client=self.do_client)
-                    remove_db_json_from_s3_space(
-                        aws_access_key_id=self._AWS_ACCESS_KEY_ID,
-                        aws_secret_access_key=self._AWS_SECRET_ACCESS_KEY,
-                        aws_region=self._AWS_REGION,
-                        appname=self.appname_guess)
 
     def build_app_spec_from_user_input(self):
         allowed_hosts = get_allowed_hosts()
@@ -1573,10 +1709,10 @@ class Helper:
         self.gh_branch = git_info["branch"]
 
         if self._target_app is not None:
-            appname = self._target_app["spec"]["name"]
+            possible_appname = self._target_app["spec"]["name"]
         else:
-            appname = self.appname_guess
-        appname = get_app_name(appname=appname)
+            possible_appname = self.appname_guess
+        confirmed_app_name = get_app_name(appname=possible_appname)
 
         if not self._oidc or inquirer.confirm(
                 "Do you want to generate a new OIDC RSA key?", default=True):
@@ -1598,7 +1734,8 @@ class Helper:
         else:
             region_guess = None
         logger.debug("Get regions with default of {}".format(region_guess))
-        aws_region = get_aws_region(client=self.do_client, region_slug=region_guess)
+        confirmed_region = get_region(client=self.do_client, region_slug=region_guess)
+        self._AWS_REGION = confirmed_region
 
         if not self._AWS_ACCESS_KEY_ID:
             self._AWS_ACCESS_KEY_ID = get_aws_access_key_id()
@@ -1609,47 +1746,40 @@ class Helper:
         session = boto3.session.Session()
         s3client = session.client('s3',
                                   endpoint_url='https://{}.digitaloceanspaces.com'.format(
-                                      aws_region),
+                                      confirmed_region),
                                   aws_access_key_id=self._AWS_ACCESS_KEY_ID,
                                   aws_secret_access_key=self._AWS_SECRET_ACCESS_KEY)
 
         logger.debug("Getting spaces")
         spacename = None
         while not spacename:
-            spacename = get_spaces(s3client=s3client, appname=appname)
-            if not spacename:
-                print(
-                    "No spaces found, please create one here: https://cloud.digitalocean.com/spaces/new")
-                answer = inquirer.prompt([inquirer.Confirm('retry',
-                                                           message="Do you want to retry?")])
-                if not answer["retry"]:
-                    print("Aborting")
-                    return None
+            spacename = get_spaces(s3client=s3client, appname=confirmed_app_name)
 
         if not self.component_name:
             self.component_name = extract_project_name(repo=self.gh_repo)
         if not self.app_prefix:
-            self.app_prefix = extract_prefix(appname)
+            self.app_prefix = extract_prefix(confirmed_app_name)
 
         rootfolder = get_root_folder(s3client=s3client, space=spacename,
-                                     component_name=appname)
+                                     component_name=confirmed_app_name)
         if not rootfolder:
             return None
 
-        get_media_folder(s3client=s3client, space=spacename,
+        mediafolder = get_media_folder(s3client=s3client, space=spacename,
                          root_folder=rootfolder)
 
         aws_s3_endpoint_url = "https://{}.{}.digitaloceanspaces.com".format(spacename,
-                                                                            aws_region)
+                                                                            confirmed_region)
 
         job_lines = inquirer.confirm(
             "Do you want to include a migration job to import db.json?", default=True)
         if job_lines:
             if not self._AWS_REGION:
-                self._AWS_REGION = get_aws_region(client=self.do_client)
+                self._AWS_REGION = get_region(client=self.do_client)
             upload_db_json_to_s3_space(aws_access_key_id=self._AWS_ACCESS_KEY_ID,
                                        aws_secret_access_key=self._AWS_SECRET_ACCESS_KEY,
-                                       aws_region=aws_region, appname=appname)
+                                       aws_region=confirmed_region,
+                                       appname=confirmed_app_name, space_name=spacename, rootfolder=rootfolder, mediafolder=mediafolder)
             self._wait_for_migrate = True
 
         aws_storage_bucket_name = rootfolder
@@ -1661,12 +1791,12 @@ class Helper:
                 "databases"] else "db-postgresql"
         logger.debug("Get clusters with default of {}".format(cluster_guess))
         cluster = get_cluster(client=self.do_client, cluster_name=cluster_guess,
-                              region=aws_region, prefix=self.app_prefix)
+                              region=confirmed_region, prefix=self.app_prefix)
 
-        pool_guess = appname + "-pool" if appname else "pool"
+        pool_guess = confirmed_app_name + "-pool" if confirmed_app_name else "pool"
         logger.debug("Get pools with default of {}".format(pool_guess))
         pool = get_pool(client=self.do_client, cluster=cluster, pool_name=pool_guess,
-                        app_name=appname, project_name=self.component_name)
+                        app_name=confirmed_app_name, project_name=self.component_name)
 
         database_url = '${' + cluster["name"] + '.' + pool["name"] + '.DATABASE_URL}'
 
@@ -1705,8 +1835,8 @@ class Helper:
         }
         spec_vars = {
             "envvars": envvars,
-            "region": aws_region,
-            "appname": appname,
+            "region": confirmed_region,
+            "appname": confirmed_app_name,
             "component_name": self.component_name,
             "domain": domain,
             "zone": zone,
@@ -1724,11 +1854,47 @@ class Helper:
         }
         self._app_spec = build_app_spec_file(env_obj=spec_vars, job_lines=job_lines)
 
+    def create_full_stack_django_app(self):
+        logger.debug("Starting building app spec from user input")
+        self.build_app_spec_from_user_input()
 
-def start():
-    temphelper = Helper()
-    temphelper.submenu_manage_apps()
+        migrate_finished_too = create_app_from_app_spec(client=self.do_client,
+                                                        potential_spec=self._app_spec,
+                                                        wait_for_migrate=self._wait_for_migrate)
+        if self._wait_for_migrate and migrate_finished_too:
+            if inquirer.confirm(
+                    "Migration appears to have succeeded, do you want to remove the migration job from the app?",
+                    default=True):
+                remove_job_from_app(client=self.do_client,
+                                    app_name=self.appname_guess,
+                                    job_name="migrate")
+                if inquirer.confirm(
+                        "Now do you want to delete db.json from s3 space?",
+                        default=True):
+                    if not self._AWS_REGION:
+                        self._AWS_REGION = get_region(client=self.do_client)
+                    remove_db_json_from_s3_space(
+                        aws_access_key_id=self._AWS_ACCESS_KEY_ID,
+                        aws_secret_access_key=self._AWS_SECRET_ACCESS_KEY,
+                        aws_region=self._AWS_REGION,
+                        appname=self.appname_guess)
+
+        if inquirer.confirm(
+                "Do you want to upload local media folder to DO spaces?",
+                default=True):
+            if not self._AWS_REGION:
+                self._AWS_REGION = get_region(client=self.do_client)
+            upload_media_to_s3_space(aws_access_key_id=self._AWS_ACCESS_KEY_ID,
+                                     aws_secret_access_key=self._AWS_SECRET_ACCESS_KEY,
+                                     aws_region=self._AWS_REGION,
+                                     appname=self.appname_guess)
+
+        if inquirer.confirm("Do you want to save a json file of the app spec?",
+                            default=True):
+            filename = input("Filename to save to: ")
+            self.save_app_spec_to_json_file(filename=filename)
 
 
 if __name__ == '__main__':
-    start()
+    temphelper = Helper()
+    temphelper.main_menu()
