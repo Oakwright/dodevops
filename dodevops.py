@@ -1,3 +1,4 @@
+import configparser
 import json
 import logging
 import secrets
@@ -18,11 +19,18 @@ from cryptography.hazmat.primitives import serialization as crypto_serialization
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.DEBUG)
-ch = logging.StreamHandler()
-ch.setLevel(logging.DEBUG)
 formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-ch.setFormatter(formatter)
-logger.addHandler(ch)
+
+file_handler = logging.FileHandler('debug.log')
+file_handler.setLevel(logging.DEBUG)
+file_handler.setFormatter(formatter)
+
+console_handler = logging.StreamHandler()
+console_handler.setLevel(logging.WARNING)
+console_handler.setFormatter(formatter)
+
+logger.addHandler(file_handler)
+logger.addHandler(console_handler)
 
 load_dotenv()
 
@@ -131,7 +139,7 @@ def build_env_list(env_obj, secret_key_env_key="SECRET_KEY",
     return env_list
 
 
-def start_app_spec_file(appname, region="ams"):
+def start_app_spec_file(appname, region="sfo"):
     app_spec = {
         "name": appname,
         "services": [],
@@ -240,7 +248,8 @@ def populate_app_spec_services(app_spec, component_name, gh_repo, gh_branch, env
 
 
 def populate_app_spec_jobs(app_spec, gh_repo, gh_branch, env_list,
-                           django_user_module, deploy_on_push=True):
+                           django_user_module, import_json, deploy_on_push=True, bonuscommand1=None,
+                           bonuscommand2=None):
     lines = []
 
     python_lines = ("from custom_storages import MediaStorage;"
@@ -260,12 +269,18 @@ def populate_app_spec_jobs(app_spec, gh_repo, gh_branch, env_list,
         django_user_module))
     lines.append("python manage.py migrate\n")
 
+    if bonuscommand1:
+        lines.append(bonuscommand1)
+    if bonuscommand2:
+        lines.append(bonuscommand2)
+
     # get json file from somewhere to here
 
     lines.append("python manage.py shell -c \"{}\"\n".format(python_lines))
 
-    # Load json file
-    lines.append("python manage.py loaddata \"db.json\"\n")
+    if import_json:
+        # Load json file
+        lines.append("python manage.py loaddata \"db.json\"\n")
 
     run_command = "".join(lines)
 
@@ -286,7 +301,7 @@ def populate_app_spec_jobs(app_spec, gh_repo, gh_branch, env_list,
     return app_spec
 
 
-def build_app_spec_file(env_obj, job_lines=None):
+def build_app_spec_file(env_obj, import_json, migrate_task):
     env_list = build_env_list(env_obj["envvars"],
                               secret_key_env_key=env_obj["secret_key_env_key"],
                               allowed_hosts_env_key=env_obj["allowed_hosts_env_key"])
@@ -320,15 +335,14 @@ def build_app_spec_file(env_obj, job_lines=None):
                                           gh_branch=gh_branch,
                                           django_user_module=django_user_module,
                                           env_list=env_list,
-                                          django_root_module=django_root_module,
-                                          bonuscommand1=bonuscommand1,
-                                          bonuscommand2=bonuscommand2)
-    if job_lines:
+                                          django_root_module=django_root_module)
+    if import_json or migrate_task:
         app_spec = populate_app_spec_jobs(app_spec,
                                           gh_repo=gh_repo,
                                           gh_branch=gh_branch,
                                           django_user_module=django_user_module,
-                                          env_list=env_list)
+                                          env_list=env_list, import_json=import_json, bonuscommand1=bonuscommand1,
+                                          bonuscommand2=bonuscommand2)
         # populate_app_spec_jobs(app_spec, gh_repo, gh_branch, env_list,
         #                            django_user_module, deploy_on_push=True)
     return app_spec
@@ -402,7 +416,7 @@ def get_app_name(appname):
 
 def get_region(client, region_slug=None):
     if region_slug is None:
-        region_slug = "ams3"
+        region_slug = "sfo3"
     print("Getting regions")
     reg_resp = client.regions.list()
     regioncount = len(reg_resp["regions"])
@@ -425,8 +439,8 @@ def get_region(client, region_slug=None):
         logger.debug("Using region {}".format(pickedoption))
         return pickedoption
     else:
-        print("No regions found, defaulting to ams3")
-        return "ams3"
+        print("No regions found, defaulting to sfo3")
+        return "sfo3"
 
 
 def get_spaces(s3client, appname):
@@ -948,8 +962,46 @@ def clean_allowed_hosts_env_key(allowed_hosts_env_key):
     return allowed_hosts_env_key
 
 
+def find_git_config_file_and_repo(base_path):
+
+    git_config_files = []
+    for root, dirs, files in os.walk(base_path):
+        for d in dirs:
+            if d == ".git":
+                git_config_files.append(os.path.join(root, d, "config"))
+
+    if len(git_config_files) == 0:
+        return None
+    else:
+        config = configparser.ConfigParser()
+        config.read(git_config_files[0])
+
+        try:
+            remote_url = config.get('remote "origin"', 'url')
+            relative_path = remote_url.split("github.com/")[1]
+            relative_path = relative_path.split(".git")[0]
+            return git_config_files[0], remote_url, relative_path
+        except (configparser.NoSectionError, configparser.NoOptionError):
+            return None
+
+
+def get_active_branch_from_head(head_file_path):
+    try:
+        with open(head_file_path, 'r') as head_file:
+            ref = head_file.read().strip()
+            if ref.startswith("ref: refs/heads/"):
+                branch_name = ref.split("ref: refs/heads/")[1]
+                print("Found branch {}".format(branch_name))
+                return branch_name
+    except FileNotFoundError:
+        return None
+
+
 def get_gh_repo(existing_app=None, app_name=None, repo=None, branch=None):
     logger.debug("Getting github repo")
+
+    default_repo = None
+    default_branch = "main"
 
     if existing_app is not None and existing_app["spec"]["services"]:
         services = existing_app["spec"]["services"]
@@ -958,9 +1010,24 @@ def get_gh_repo(existing_app=None, app_name=None, repo=None, branch=None):
                 repo = repo or service["github"]["repo"]
                 branch = branch or service["github"]["branch"]
     if repo is None or branch is None:
-        repo = repo or inquirer.text("What is the github repo for your app?")
+        current_directory = os.getcwd()
+        config_path, git_repo, relative_path = find_git_config_file_and_repo(current_directory)
+        if relative_path:
+            default_repo = relative_path
+            print("GitHub repository found:")
+            print(config_path)
+
+            head_file = os.path.join(os.path.dirname(config_path), "HEAD")
+            if head_file:
+                default_branch = get_active_branch_from_head(head_file)
+
+        else:
+            print(
+                "No GitHub repositories found in the current directory or its subdirectories.")
+
+        repo = repo or inquirer.text("What is the github repo for your app?", default=default_repo)
         branch = branch or inquirer.text("What branch should we build from?",
-                                         default="main")
+                                         default=default_branch)
     return {"repo": repo, "branch": branch}
 
 
@@ -969,9 +1036,11 @@ def get_aws_access_key_id():
         return os.getenv("$AWS_ACCESS_KEY_ID")
     else:
         print("No AWS_ACCESS_KEY_ID found")
+        print("This tool uses DigitalOcean's s3 Spaces API to create and manage resources")
+        print("You can create a new access key here:")
         print("https://cloud.digitalocean.com/account/api/spaces")
-        promptentry = input(
-            "Please enter your AWS_ACCESS_KEY_ID and press enter to continue: ")
+        print("You can save effort when running this tool by setting the key id in the environment variable AWS_ACCESS_KEY_ID")
+        promptentry = input("Please enter your AWS_ACCESS_KEY_ID and press enter to continue: ")
         return promptentry
 
 
@@ -980,9 +1049,11 @@ def get_aws_secret_access_key():
         return os.getenv("$AWS_SECRET_ACCESS_KEY")
     else:
         print("No AWS_SECRET_ACCESS_KEY found")
+        print("This tool uses DigitalOcean's s3 Spaces API to create and manage resources")
+        print("You can create a new access key here:")
         print("https://cloud.digitalocean.com/account/api/spaces")
-        promptentry = inquirer.password(
-            message="Please enter your AWS_SECRET_ACCESS_KEY and press enter to continue: ")
+        print("You can save effort when running this tool by setting the key in the environment variable AWS_SECRET_ACCESS_KEY")
+        promptentry = inquirer.password(message="Please enter your AWS_SECRET_ACCESS_KEY and press enter to continue: ")
         return promptentry
 
 
@@ -1267,6 +1338,12 @@ def check_space_existence(client, space_name):
         return False
 
 
+def get_secret_key_env_key_from_env(env_var_list):
+    for var_name in env_var_list:
+        if os.getenv(var_name):
+            return var_name
+
+
 class Helper:
     # DigitalOcean's connection info
     _DIGITALOCEAN_TOKEN = None
@@ -1309,7 +1386,10 @@ class Helper:
     def _digitalocean_token(self):
         while not self._DIGITALOCEAN_TOKEN:
             print("No DIGITALOCEAN_TOKEN found")
+            print("This tool uses DigitalOcean's API to create and manage resources")
+            print("You can create a token here: ")
             print("https://cloud.digitalocean.com/account/api/tokens")
+            print("You can save effort when running this tool by setting the token in the environment variable DIGITALOCEAN_API_TOKEN")
             self._DIGITALOCEAN_TOKEN = getpass.getpass("Enter your DigitalOcean token: ")
         return self._DIGITALOCEAN_TOKEN
 
@@ -1368,7 +1448,7 @@ class Helper:
 
         # DigitalOcean's connection info
         potential_var_names = ["$DIGITALOCEAN_TOKEN", "DIGITALOCEAN_TOKEN",
-                               "digitalocean_token"]
+                               "digitalocean_token", "DIGITALOCEAN_API_TOKEN"]
         self._DIGITALOCEAN_TOKEN = _get_env_var_from_list_or_keep_original(
             potential_var_names, self._DIGITALOCEAN_TOKEN, override)
 
@@ -1430,6 +1510,8 @@ class Helper:
                                "django_secret_key"]
         self._secret_key = _get_env_var_from_list_or_keep_original(
             potential_var_names, self._secret_key, override)
+        if not self.secret_key_env_key:
+            self.secret_key_env_key = get_secret_key_env_key_from_env(potential_var_names)
 
         potential_var_names = ["allowed_hosts_env_key", "allowed_hosts", "ALLOWED_HOSTS",
                                "ALLOWED_HOSTS_ENV_KEY"]
@@ -1469,6 +1551,12 @@ class Helper:
             self._app_spec = json.load(f)
 
     def main_menu(self):
+        while not self._digitalocean_token:
+            print("No DIGITALOCEAN_TOKEN found")
+        if not self._AWS_ACCESS_KEY_ID:
+            self._AWS_ACCESS_KEY_ID = get_aws_access_key_id()
+        if not self._AWS_SECRET_ACCESS_KEY:
+            self._AWS_SECRET_ACCESS_KEY = get_aws_secret_access_key()
         while True:
             options = [
                 ("$$$ Create Full Stack Django App $$$", "create_full_stack_django_app"),
@@ -1720,10 +1808,12 @@ class Helper:
             self._oidc = get_oidc_rsa_key()
         oidc_rsa_private_key = self._oidc
 
-        if not self.secret_key_env_key:
-            self.secret_key_env_key = inquirer.text(
-                message="What is the name of the environment variable that contains the Django secret key?",
-                default="SECRET_KEY")
+        default_secret_env_key = "SECRET_KEY"
+        if self.secret_key_env_key:
+            default_secret_env_key = self.secret_key_env_key
+        self.secret_key_env_key = inquirer.text(
+            message="What is the name of the environment variable that contains the Django secret key?",
+            default=default_secret_env_key)
         if not self._secret_key or inquirer.confirm(
                 "Do you want to generate a new Django secret key?", default=False):
             self._secret_key = secrets.token_urlsafe()
@@ -1767,21 +1857,27 @@ class Helper:
             return None
 
         mediafolder = get_media_folder(s3client=s3client, space=spacename,
-                         root_folder=rootfolder)
+                                       root_folder=rootfolder)
 
         aws_s3_endpoint_url = "https://{}.{}.digitaloceanspaces.com".format(spacename,
                                                                             confirmed_region)
 
-        job_lines = inquirer.confirm(
-            "Do you want to include a migration job to import db.json?", default=True)
-        if job_lines:
-            if not self._AWS_REGION:
-                self._AWS_REGION = get_region(client=self.do_client)
-            upload_db_json_to_s3_space(aws_access_key_id=self._AWS_ACCESS_KEY_ID,
-                                       aws_secret_access_key=self._AWS_SECRET_ACCESS_KEY,
-                                       aws_region=confirmed_region,
-                                       appname=confirmed_app_name, space_name=spacename, rootfolder=rootfolder, mediafolder=mediafolder)
+        migrate_task = inquirer.confirm(
+            "Do you want to include a migration job?", default=True)
+        import_json = False
+        if migrate_task:
             self._wait_for_migrate = True
+
+            import_json = inquirer.confirm("Do you want to import db.json?", default=True)
+
+            if import_json:
+
+                if not self._AWS_REGION:
+                    self._AWS_REGION = get_region(client=self.do_client)
+                upload_db_json_to_s3_space(aws_access_key_id=self._AWS_ACCESS_KEY_ID,
+                                           aws_secret_access_key=self._AWS_SECRET_ACCESS_KEY,
+                                           aws_region=confirmed_region,
+                                           appname=confirmed_app_name, space_name=spacename, rootfolder=rootfolder, mediafolder=mediafolder)
 
         aws_storage_bucket_name = rootfolder
         aws_location = rootfolder
@@ -1853,7 +1949,7 @@ class Helper:
             "bonuscommand1": self.bonuscommand1,
             "bonuscommand2": self.bonuscommand2,
         }
-        self._app_spec = build_app_spec_file(env_obj=spec_vars, job_lines=job_lines)
+        self._app_spec = build_app_spec_file(env_obj=spec_vars, migrate_task=migrate_task, import_json=import_json)
 
     def create_full_stack_django_app(self):
         logger.debug("Starting building app spec from user input")
@@ -1896,6 +1992,10 @@ class Helper:
             self.save_app_spec_to_json_file(filename=filename)
 
 
-if __name__ == '__main__':
+def main():
     temphelper = Helper()
     temphelper.main_menu()
+
+
+if __name__ == '__main__':
+    main()

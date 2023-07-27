@@ -1,36 +1,60 @@
-# TLDR
+# **DoDevOps**
 
-This is a tool to take github repos for Django projects and put them on DigitalOcean App Spaces with managed database and DO Spaces S3 storage.
+DoDevOps is a tool for creating and managing Django apps on DigitalOcean's App Platform. 
+It accesses DigitalOcean through the API, so it requires a DigitalOcean API token,
+and it requires a DigitalOcean Spaces key for storing media uploads.
+Additionally, you must authorize DigitalOcean to pull your GitHub repos.
 
-You will need:
+## Prerequisites:
 
-1) Poetry installed locally to run this tool
+1) Python 3.9 on Linux or Mac
 2) DigitalOcean account https://www.digitalocean.com/?refcode=9ef6f738fd8a
 3) DigitalOcean API token: https://cloud.digitalocean.com/account/api/tokens
 4) DigitalOcean S3 keys: https://cloud.digitalocean.com/account/api/spaces
 5) Authorize DigitalOcean to pull your github repos: https://cloud.digitalocean.com/apps/github/install
-6) A DigitalOcean S3 bucket: https://cloud.digitalocean.com/spaces/new
-7) A DigitalOcean PostgreSQL database cluster: https://cloud.digitalocean.com/databases
-8) A database and user and connection pool configured on the database cluster
-9) Manually add the app as a trusted source on the database
 
-There are plans to integrate items 6-9 into this tool, we just haven't gotten that far yet.
+# Installation
+
+This tool can be installed with pip. 
+If installed in a Django project, it will try to detect some settings from the project such as repo and branch,
+as well as enable migration of db.json files and media uploads.
+
+```shell
+pip install dodevops
+```
 
 To run the tool:
 
 ```shell
-poetry run start
+dodevops
 ```
 
-# What is this
+# Quickstart
 
-This is essentially an experiment/prototype that got a little too big and had some potential. So it's being turned into a project.
+## Migrate an existing Django project to DigitalOcean App Platform
 
-proto.py is the original prototype.
+1) Create clean temporary directory for your project
+2) Create a virtual environment in the directory (python 3.9 or higher) 
+   ```mkvirtualenv tempenv```
+3) git clone your project into the directory
+4) install requirements for your project
+   ```pip install -r requirements.txt```
+5) If you are migrating media uploads, copy your media folder into your project directory
+6) If you are migrating db.json files, copy or generate your db.json files into your project directory
+7) Run any project specific migration tasks
+8) Make sure pip is up to date
+   ```pip install --upgrade pip```
+9) Install dodevops
+   ```pip install dodevops```
+10) Export environment variables
+    ```
+    export DIGITALOCEAN_API_TOKEN=dop_v1_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+    export AWS_ACCESS_KEY_ID=xxxxxxxxxxxxxxxxxxx
+    export AWS_SECRET_ACCESS_KEY=xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+    ```
+11) Run dodevops
+    ```dodevops```
 
-This project uses inquirer to get user input. As far as I know it only works on linux and mac. 
-When debugging in pycharm, you may need to set the run/debug settings to use the terminal emulation.
-You can find a link with more info here: https://intellij-support.jetbrains.com/hc/en-us/community/posts/360003383619-Pycharm-2019-termios-error-25-Inappropriate-ioctl-for-device-?page=1#community_comment_6589796593042 and here https://github.com/magmax/python-readchar/issues/11
 
 # Details
 
@@ -38,7 +62,7 @@ You can find a link with more info here: https://intellij-support.jetbrains.com/
 
 In order for this app to work it needs a valid DigitalOcean Personal Access Token. 
 The token is not required after this is run, so it is okay to recyle the token when finished. 
-The token can either be stored in a .env file, or it can be pasted into the app at run time. 
+The token can either be stored in a .env file or env variable, or it can be pasted into the app at run time. 
 
 ### To generating a new token
 
@@ -54,7 +78,7 @@ The token won't be displayed again, so if you don't get it saved somewhere safe 
 Protect your token well. 
 Anyone with access to your token has the ability to create and destroy things and incur you costs, so be careful with it. 
 This is opensource so that you can read the code if you want and verify how the token is used. 
-Storing the token in the .env file is convenient but it is not the most secure, so if you feel paranoid don't do that or delete the token after. 
+Storing the token in the .env file is convenient, but it is not the most secure, so if you feel paranoid don't do that. 
 
 If you want more info about DO tokens, see here: https://docs.digitalocean.com/reference/api/create-personal-access-token/
 
@@ -62,7 +86,7 @@ If you want more info about DO tokens, see here: https://docs.digitalocean.com/r
 
 A DO Spaces key is required for storing a media upload folder, as app platform doesn't have storage. 
 
-### To generating an app spaces key 
+### To generate an app spaces key 
 
 Go here: https://cloud.digitalocean.com/account/api/spaces 
 
@@ -76,15 +100,9 @@ Protect the token well.
 
 To learn more about DO spaces keys, go here: https://docs.digitalocean.com/products/spaces/how-to/manage-access/#access-keys
 
-## Create a DO Spaces S3 bucket
-
-You must create an S3 bucket on DO's web interface:
-
-https://cloud.digitalocean.com/spaces/new
-
 ## Filling out .env file
 
-A .env file isn't required, but if you store values in it then it will save effort. 
+A .env file isn't required, but if you store values in it then it will save effort.
 But if you feel storing values in the .env file isn't secure enough for your personal paranoia levels you can instead enter things at runtime.
 
 The format of the env file is:
@@ -97,7 +115,7 @@ AWS_SECRET_ACCESS_KEY=xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
 # APP_NAME=example-rest-app
 # COMPONENT_NAME=example-rest
 # APP_PREFIX=example
-GH_REPO=xusernamex/xrepox
+# GH_REPO=xusernamex/xrepox
 # GH_BRANCH=main
 # DJANGO_ROOT_MODULE=example
 # DJANGO_USER_MODULE=core
@@ -109,3 +127,9 @@ GH_REPO=xusernamex/xrepox
 # PARENT_DOMAIN=example.com
 # OIDC="\"-----BEGIN RSA PRIVATE KEY-----\\n_xxx_\\n-----END RSA PRIVATE KEY-----\\n\""
 ```
+
+## Linux and Mac
+
+This project uses inquirer to get user input. As far as I know it only works on linux and mac. 
+When debugging in pycharm, you may need to set the run/debug settings to use the terminal emulation.
+You can find a link with more info here: https://intellij-support.jetbrains.com/hc/en-us/community/posts/360003383619-Pycharm-2019-termios-error-25-Inappropriate-ioctl-for-device-?page=1#community_comment_6589796593042 and here https://github.com/magmax/python-readchar/issues/11

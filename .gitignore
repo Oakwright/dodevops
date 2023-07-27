@@ -5,3 +5,5 @@ __pycache__
 /appspecs
 db.json
 /media
+/dist
+debug.log
