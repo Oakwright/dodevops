@@ -7,3 +7,6 @@ db.json
 /media
 /dist
 debug.log
+.coverage
+profile_data
+/htmlcov

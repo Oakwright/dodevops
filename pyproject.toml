@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "dodevops"
-version = "0.1.9"
+version = "0.1.13"
 description = "Devops tool for deploying and managing resources on DigitalOcean"
 authors = ["Abby Oakwright <abby.oakwright@gmail.com>"]
 readme = "README.md"
@@ -17,6 +17,7 @@ boto3 = "^1.26.143"
 cryptography = "^39.0.1"
 psycopg2-binary = "^2.9.5"
 configparser = "^6.0.0"
+coverage = "^7.2.7"
 
 
 [build-system]
@@ -24,4 +25,4 @@ requires = ["poetry-core"]
 build-backend = "poetry.core.masonry.api"
 
 [tool.poetry.scripts]
-dodevops = "dodevops:main"
+dodevops = "dodevops.dodevops:main"

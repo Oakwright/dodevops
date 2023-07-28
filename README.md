@@ -11,7 +11,7 @@ Additionally, you must authorize DigitalOcean to pull your GitHub repos.
 2) DigitalOcean account https://www.digitalocean.com/?refcode=9ef6f738fd8a
 3) DigitalOcean API token: https://cloud.digitalocean.com/account/api/tokens
 4) DigitalOcean S3 keys: https://cloud.digitalocean.com/account/api/spaces
-5) Authorize DigitalOcean to pull your github repos: https://cloud.digitalocean.com/apps/github/install
+5) Authorize DigitalOcean to pull your GitHub repos: https://cloud.digitalocean.com/apps/github/install
 
 # Installation
 
@@ -33,28 +33,35 @@ dodevops
 
 ## Migrate an existing Django project to DigitalOcean App Platform
 
-1) Create clean temporary directory for your project
-2) Create a virtual environment in the directory (python 3.9 or higher) 
-   ```mkvirtualenv tempenv```
-3) git clone your project into the directory
-4) install requirements for your project
-   ```pip install -r requirements.txt```
-5) If you are migrating media uploads, copy your media folder into your project directory
-6) If you are migrating db.json files, copy or generate your db.json files into your project directory
-7) Run any project specific migration tasks
-8) Make sure pip is up to date
+1) Create a virtual environment 
+   ```mkvirtualenv dodevops```
+2) Make sure pip is up to date
    ```pip install --upgrade pip```
-9) Install dodevops
+3) Install dodevops
    ```pip install dodevops```
-10) Export environment variables
+4) Change directory to wherever your Django app is
+5) Export environment variables
     ```
     export DIGITALOCEAN_API_TOKEN=dop_v1_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
     export AWS_ACCESS_KEY_ID=xxxxxxxxxxxxxxxxxxx
     export AWS_SECRET_ACCESS_KEY=xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+    export MIGRATE_SCRIPT_1="python manage.py shell -c \"import some_module; some_module.some_function()\""
+    export MIGRATE_SCRIPT_2=""
     ```
-11) Run dodevops
+6) Run dodevops
     ```dodevops```
 
+Technically the DoDevOps doesn't need it's own environment and can be installed in existing environments,
+but sometimes isolation is nice.
+
+DoDevOps doesn't have to be run from within a Django folder,
+but if .env or .git are available it will try and guess some of your settings for your. 
+It does require a /media folder in order to upload media folder to s3,
+and it does require db.json if migrating a previous database.
+Exporting environment variables isn't required, if not supplied DoDevOps will ask the user to enter them at runtime. 
+
+The environment variables MIGRATE_SCRIPT_x can be used to hold lines of user supplied scripts for the migration job. 
+These are single shell lines executed as a pre-deploy task on the live DO server.
 
 # Details
 
@@ -98,7 +105,7 @@ You can put the values in an .env file, or enter it at runtime.
 
 Protect the token well.
 
-To learn more about DO spaces keys, go here: https://docs.digitalocean.com/products/spaces/how-to/manage-access/#access-keys
+To learn more about DO Spaces keys, go here: https://docs.digitalocean.com/products/spaces/how-to/manage-access/#access-keys
 
 ## Filling out .env file
 
