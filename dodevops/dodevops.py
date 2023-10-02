@@ -1419,7 +1419,9 @@ def get_secret_key_env_key_from_env(env_var_list):
 def save_app_spec_to_json_file(app_spec, filename=None):
     if not filename:
         filename = app_spec["name"] + ".json"
-    with open("appspecs/" + filename, "w") as f:
+    directory = "appspecs/"
+    os.makedirs(directory, exist_ok=True)
+    with open(directory + filename, "w") as f:
         json.dump(app_spec, f, indent=4)
 
 
