@@ -10,3 +10,5 @@ debug.log
 .coverage
 profile_data
 /htmlcov
+1p.env
+passwd-s3fs
